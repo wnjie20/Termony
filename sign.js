@@ -72,4 +72,4 @@ DecipherUtil.readDirBytes = r => {
   return new Int8Array(t);
 };
 
-console.log(DecipherUtil.decryptPwd("/Users/macbookair/.ohos/config/", process.argv[2]));
+console.log(DecipherUtil.decryptPwd(process.argv[2], process.argv[3]));
