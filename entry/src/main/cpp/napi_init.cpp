@@ -11,7 +11,7 @@ static int fd = -1;
 static napi_value Run(napi_env env, napi_callback_info info)
 {
     assert(fp == nullptr);
-    fp = popen("echo 123", "r");
+    fp = popen("echo 123 && sleep 5 && echo 123", "r");
     // extract fd
     fd = fileno(fp);
     // set nonblocking
@@ -25,6 +25,12 @@ static napi_value Read(napi_env env, napi_callback_info info)
     ssize_t r = read(fd, buffer, sizeof(buffer)-1);
     if (r > 0) {
         buffer[r] = '\0';
+        napi_value ret;
+        napi_create_string_utf8(env, buffer, r, &ret);
+        return ret;
+    } else if (r == -1 && errno == EAGAIN) {
+        // empty string
+        buffer[0] = '\0';
         napi_value ret;
         napi_create_string_utf8(env, buffer, r, &ret);
         return ret;
