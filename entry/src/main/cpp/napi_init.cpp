@@ -5,11 +5,16 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <pty.h>
+#include <poll.h>
 
 static int fd = -1;
 
 static napi_value Run(napi_env env, napi_callback_info info)
 {
+    if (fd != -1) {
+        return nullptr;
+    }
+
     struct winsize ws = {};
     ws.ws_col = 24;
     ws.ws_row = 80;
@@ -25,22 +30,28 @@ static napi_value Run(napi_env env, napi_callback_info info)
 
 static napi_value Read(napi_env env, napi_callback_info info)
 {
-    char buffer[128];
-    ssize_t r = read(fd, buffer, sizeof(buffer)-1);
-    if (r > 0) {
-        buffer[r] = '\0';
-        napi_value ret;
-        napi_create_string_utf8(env, buffer, r, &ret);
-        return ret;
-    } else if (r == -1 && errno == EAGAIN) {
-        // empty string
-        buffer[0] = '\0';
-        napi_value ret;
-        napi_create_string_utf8(env, buffer, r, &ret);
-        return ret;
-    } else {
-        return nullptr;
+    struct pollfd fds[1];
+    fds[0].fd = fd;
+    fds[0].events = POLLIN;
+    int res = poll(fds, 1, 5000);
+    static char buffer[16384];
+    if (res > 0) {
+        ssize_t r = read(fd, buffer, sizeof(buffer)-1);
+        if (r > 0) {
+            buffer[r] = '\0';
+            napi_value ret;
+            napi_create_string_utf8(env, buffer, r, &ret);
+            return ret;
+        } else if (r == -1 && errno != EAGAIN) {
+            // error
+            return nullptr;
+        }
     }
+    // empty string: no more available
+    buffer[0] = '\0';
+    napi_value ret;
+    napi_create_string_utf8(env, buffer, 1, &ret);
+    return ret;
 }
 
 static std::string get_str(napi_env env, napi_value value) {
@@ -56,6 +67,10 @@ static std::string get_str(napi_env env, napi_value value) {
 
 static napi_value Send(napi_env env, napi_callback_info info)
 {
+    if (fd == -1) {
+        return nullptr;
+    }
+
     size_t argc = 1;
     napi_value args[1] = {nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
