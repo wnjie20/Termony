@@ -36,6 +36,10 @@
       {
         "package": "busybox.hnp",
         "type": "private"
+      },
+      {
+        "package": "bash.hnp",
+        "type": "private"
       }
     ]
   }
