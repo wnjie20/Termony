@@ -25,9 +25,10 @@ struct Index {
         let content: string = await taskpool.execute(task) as string;
         if (content === undefined) {
           break;
+        } else if (content.length > 0) {
+          this.message += content;
+          this.scroller.scrollEdge(Edge.Bottom);
         }
-        this.message += content;
-        this.scroller.scrollEdge(Edge.Bottom);
       }
     })();
   }
