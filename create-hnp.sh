@@ -26,5 +26,22 @@ make install DESTDIR=$PWD/../../../bash
 popd
 /Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hnpcli pack -i bash -n bash -v 5.2.37
 
+wget -c https://github.com/eembc/coremark/archive/refs/heads/main.zip
+mv main.zip coremark.zip
+rm -rf coremark
+rm -rf coremark-source
+mkdir -p coremark/bin
+mkdir coremark-source
+pushd coremark-source
+unzip ../coremark.zip
+cd coremark-main
+CC=/Applications/DevEco-Studio.app/Contents//sdk/default/openharmony/native/llvm/bin/aarch64-unknown-linux-ohos-clang make XCFLAGS="-O3 -static" compile
+cp coremark.exe $PWD/../../coremark/bin/coremark.exe
+CC=/Applications/DevEco-Studio.app/Contents//sdk/default/openharmony/native/llvm/bin/aarch64-unknown-linux-ohos-clang make clean
+CC=/Applications/DevEco-Studio.app/Contents//sdk/default/openharmony/native/llvm/bin/aarch64-unknown-linux-ohos-clang make XCFLAGS="-O3 -DMULTITHREAD=20 -DUSE_PTHREAD -pthread -static" compile
+cp coremark.exe $PWD/../../coremark/bin/coremark_p20c.exe
+popd
+/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hnpcli pack -i coremark -n coremark -v 2025.06.08-main
+
 rm -f ../entry/hnp/arm64-v8a/*.hnp
 cp *.hnp ../entry/hnp/arm64-v8a/

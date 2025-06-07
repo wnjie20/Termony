@@ -40,6 +40,10 @@
       {
         "package": "bash.hnp",
         "type": "private"
+      },
+      {
+        "package": "coremark.hnp",
+        "type": "private"
       }
     ]
   }
