@@ -1,1 +1,2 @@
-export const add: (a: number, b: number) => number;
+export const run: () => void;
+export const read: () => string | undefined;
