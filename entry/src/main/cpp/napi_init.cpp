@@ -4,18 +4,22 @@
 #include <assert.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <pty.h>
 
-static FILE *fp = nullptr;
 static int fd = -1;
 
 static napi_value Run(napi_env env, napi_callback_info info)
 {
-    assert(fp == nullptr);
-    fp = popen("echo 123 && sleep 5 && echo 123", "r");
-    // extract fd
-    fd = fileno(fp);
-    // set nonblocking
-    assert(fcntl(fd, F_SETFL, O_NONBLOCK) == 0);
+    struct winsize ws = {};
+    ws.ws_col = 24;
+    ws.ws_row = 80;
+    int pid = forkpty(&fd, nullptr, nullptr, &ws);
+    if(!pid)
+    {
+        execl("/bin/sh", "/bin/sh", nullptr);
+    }
+
+    assert(fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0);
     return nullptr;
 }
 
@@ -39,12 +43,40 @@ static napi_value Read(napi_env env, napi_callback_info info)
     }
 }
 
+static std::string get_str(napi_env env, napi_value value) {
+    size_t size = 0;
+    assert(napi_get_value_string_utf8(env, value, NULL, 0, &size) == napi_ok);
+    std::vector<char> buffer(size + 1);
+
+    assert(napi_get_value_string_utf8(env, value, buffer.data(), buffer.size(),
+                                        &size) == napi_ok);
+    std::string s(buffer.data(), size);
+    return s;
+}
+
+static napi_value Send(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    std::string benchmark = get_str(env, args[0]);
+    int written = 0;
+    while (written < benchmark.size()) {
+        int size = write(fd, benchmark.c_str() + written, benchmark.size() - written);
+        assert(size >= 0);
+        written += size;
+    }
+    return nullptr;
+}
+
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports)
 {
     napi_property_descriptor desc[] = {
         { "run", nullptr, Run, nullptr, nullptr, nullptr, napi_default, nullptr },
-        { "read", nullptr, Read, nullptr, nullptr, nullptr, napi_default, nullptr }
+        { "read", nullptr, Read, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "send", nullptr, Send, nullptr, nullptr, nullptr, napi_default, nullptr }
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     return exports;

@@ -14,10 +14,6 @@ function worker() {
 struct Index {
   @State message: string = 'Hello World:';
 
-  onPageShow() {
-    testNapi.run();
-  }
-
   build() {
     Row() {
       Column() {
@@ -25,6 +21,7 @@ struct Index {
           .fontSize($r('app.float.page_text_font_size'))
           .fontWeight(FontWeight.Bold)
           .onClick(async () => {
+            testNapi.run();
             let task: taskpool.Task = new taskpool.Task(worker);
             while(1) {
               let content: string = await taskpool.execute(task) as string;
@@ -33,6 +30,12 @@ struct Index {
               }
               this.message += content;
             }
+          })
+        Text("Send")
+          .fontSize($r('app.float.page_text_font_size'))
+          .fontWeight(FontWeight.Bold)
+          .onClick(async () => {
+            testNapi.send("ls -al\n");
           })
       }
       .width('100%')
