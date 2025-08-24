@@ -1,56 +1,55 @@
 // for standalone build to test on Linux:
-// clang++ -std=c++17 terminal.cpp -I/usr/include/freetype2 -DSTANDALONE -lfreetype -lGLESv2 -lglfw -o terminal
+// clang++ -std=c++17 terminal.cpp -I/usr/include/freetype2 -DSTANDALONE -lfreetype -lutf8proc -lGLESv2 -lglfw -o terminal
 
 #include "terminal.h"
 #include "freetype/ftmm.h"
+#include "utf8proc-2.10.0/utf8proc.h"
 #include <GLES3/gl32.h>
 #include <algorithm>
-#include <assert.h>
+#include <cstdarg>
 #include <cstdint>
 #include <deque>
-#include <fcntl.h>
 #include <map>
-#include <poll.h>
-#include <pty.h>
 #include <set>
-#include <stdint.h>
 #include <string>
+#include <vector>
+#include <assert.h>
+#include <fcntl.h>
 #include <sys/time.h>
 #include <unistd.h>
-#include <vector>
-#include <array>
+#include <poll.h>
+#include <pty.h>
 #include <pthread.h>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
 #ifdef STANDALONE
-// https://stackoverflow.com/questions/5343190/how-do-i-replace-all-instances-of-a-string-with-another-string
-std::string ReplaceString(std::string subject, const std::string& search,
-                          const std::string& replace) {
-    size_t pos = 0;
-    while ((pos = subject.find(search, pos)) != std::string::npos) {
-         subject.replace(pos, search.length(), replace);
-         pos += replace.length();
-    }
-    return subject;
-}
-
-void CustomPrintf(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    std::string new_fmt = fmt;
-    new_fmt = ReplaceString(new_fmt, "%{public}", "%");
-    new_fmt += "\n";
-    vfprintf(stderr, new_fmt.c_str(), args);
-}
-#define OH_LOG_ERROR(tag, fmt, ...) CustomPrintf(fmt, __VA_ARGS__)
-#define OH_LOG_INFO(tag, fmt, ...) CustomPrintf(fmt, __VA_ARGS__)
-#define OH_LOG_WARN(tag, fmt, ...) CustomPrintf(fmt, __VA_ARGS__)
+#define LOG_INFO(fmt, ...) fprintf(stderr, fmt "\n", __VA_ARGS__)
+#define LOG_WARN(fmt, ...) fprintf(stderr, fmt "\n", __VA_ARGS__)
+#define LOG_ERROR(fmt, ...) fprintf(stderr, fmt "\n", __VA_ARGS__)
 #else
 #include "hilog/log.h"
-#undef LOG_TAG
-#define LOG_TAG "testTag"
+#undef LOG_DEBUG
+#undef LOG_INFO
+#undef LOG_WARN
+#undef LOG_ERROR
+#undef LOG_FATAL
+void hiprintf(int level, const char * fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    constexpr int bufsz = 8192;
+    char buf[bufsz];
+    if (vsnprintf(buf, bufsz, fmt, args) > 0) {
+        OH_LOG_Print(LOG_APP, (LogLevel)level, 0, "testTag", "%{public}s", buf);
+    }
+    va_end(args);
+}
+#define LOG_DEBUG(...) hiprintf(3, __VA_ARGS__)
+#define LOG_INFO(...) hiprintf(4, __VA_ARGS__)
+#define LOG_WARN(...) hiprintf(5, __VA_ARGS__)
+#define LOG_ERROR(...) hiprintf(6, __VA_ARGS__)
+#define LOG_FATAL(...) hiprintf(7, __VA_ARGS__)
 #endif
 
 // docs for escape codes:
@@ -66,34 +65,29 @@ void CustomPrintf(const char *fmt, ...) {
 // Pt: text parameter of printable characters
 
 // solarized light
-// fails on g++
-static std::array<int, 3> predefined_colors[max_term_color] = {
-    [black] = { 7, 54, 66 },
-    [red] = { 220, 50, 47 },
-    [green] = { 13, 153, 0 },
-    [yellow] = { 181, 137, 0 },
-    [blue] = { 38, 139, 210 },
-    [magenta] = { 221, 54, 130 },
-    [cyan] = { 42, 161, 152 },
-    [white] = { 238, 232, 213 },
+static uint32_t predefined_colors[max_term_color] = {
+    [black] = PACK_RGB( 7, 54, 66 ),
+    [red] = PACK_RGB( 220, 50, 47 ),
+    [green] = PACK_RGB( 13, 153, 0 ),
+    [yellow] = PACK_RGB( 181, 137, 0 ),
+    [blue] = PACK_RGB( 38, 139, 210 ),
+    [magenta] = PACK_RGB( 221, 54, 130 ),
+    [cyan] = PACK_RGB( 42, 161, 152 ),
+    [white] = PACK_RGB( 238, 232, 213 ),
 
-    [brblack] = { 0, 43, 54 },
-    [brred] = { 203, 75, 22 },
-    [brgreen] = { 88, 110, 117 },
-    [bryellow] = { 101, 123, 131 },
-    [brblue] = { 131, 148, 150 },
-    [brmagenta] = { 108, 113, 196 },
-    [brcyan] = { 147, 161, 161 },
-    [brwhite] = { 253, 246, 227 },
+    [brblack] = PACK_RGB( 0, 43, 54 ),
+    [brred] = PACK_RGB( 203, 75, 22 ),
+    [brgreen] = PACK_RGB( 88, 110, 117 ),
+    [bryellow] = PACK_RGB( 101, 123, 131 ),
+    [brblue] = PACK_RGB( 131, 148, 150 ),
+    [brmagenta] = PACK_RGB( 108, 113, 196 ),
+    [brcyan] = PACK_RGB( 147, 161, 161 ),
+    [brwhite] = PACK_RGB( 253, 246, 227 ),
 };
 
 term_style::term_style() {
-    fg_red = predefined_colors[black][0] / 255.0;
-    fg_green = predefined_colors[black][1] / 255.0;
-    fg_blue = predefined_colors[black][2] / 255.0;
-    bg_red = predefined_colors[white][0] / 255.0;
-    bg_green = predefined_colors[white][1] / 255.0;
-    bg_blue = predefined_colors[white][2] / 255.0;
+    fore = predefined_colors[black];
+    back = predefined_colors[white];
 }
 
 static std::vector<std::string> SplitString(const std::string &str, const std::string &delimiter) {
@@ -138,35 +132,35 @@ constexpr uint32_t TrueColorFrom(uint8_t index) {
 }
 
 void terminal_context::ResizeTo(int new_term_row, int new_term_col) {
-    int old_term_col = term_col;
-    term_row = new_term_row;
-    term_col = new_term_col;
+    int old_term_col = num_cols;
+    num_rows = new_term_row;
+    num_cols = new_term_col;
 
     // update scroll margin
     scroll_top = 0;
-    scroll_bottom = term_row - 1;
+    scroll_bottom = num_rows - 1;
 
-    terminal.resize(term_row);
-    for (int i = 0; i < term_row; i++) {
-        terminal[i].resize(term_col);
+    buffer.resize(num_rows);
+    for (int i = 0; i < num_rows; i++) {
+        buffer[i].resize(num_cols);
     }
 
-    if (row > term_row - 1) {
-        row = term_row - 1;
+    if (row > num_rows - 1) {
+        row = num_rows - 1;
     }
 
-    if (col > term_col - 1) {
-        col = term_col - 1;
+    if (col > num_cols - 1) {
+        col = num_cols - 1;
     }
 
-    tab_stops.resize(term_col);
-    for (int i = old_term_col;i < term_col;i += tab_size) {
+    tab_stops.resize(num_cols);
+    for (int i = old_term_col;i < num_cols;i += tab_size) {
         tab_stops[i] = true;
     }
 
     struct winsize ws = {};
-    ws.ws_col = term_col;
-    ws.ws_row = term_row;
+    ws.ws_col = num_cols;
+    ws.ws_row = num_rows;
     ioctl(fd, TIOCSWINSZ, &ws);
 }
 
@@ -174,44 +168,62 @@ void terminal_context::DropFirstRowIfOverflow() {
     if (row == scroll_bottom + 1) {
         // drop first row in scrolling margin
         assert(scroll_top < scroll_bottom);
-        history.push_back(terminal[scroll_top]);
-        terminal.erase(terminal.begin() + scroll_top);
-        terminal.insert(terminal.begin() + scroll_bottom, std::vector<term_char>());
-        terminal[scroll_bottom].resize(term_col);
+        history.push_back(buffer[scroll_top]);
+        buffer.erase(buffer.begin() + scroll_top);
+        buffer.insert(buffer.begin() + scroll_bottom, std::vector<term_char>());
+        buffer[scroll_bottom].resize(num_cols);
         row--;
 
         while (history.size() > MAX_HISTORY_LINES) {
             history.pop_front();
         }
-    } else if (row >= term_row) {
-        row = term_row - 1;
+    } else if (row >= num_rows) {
+        row = num_rows - 1;
     }
 }
 
-void terminal_context::InsertUtf8(uint32_t codepoint) {
-    assert(row >= 0 && row < term_row);
-    assert(col >= 0 && col <= term_col);
-    if (col == term_col) {
-        // special handling if cursor is on the right edge
-        if (autowrap) {
-            // wrap to next line
-            col = 0;
-            row++;
-            DropFirstRowIfOverflow();
+int char_width(uint32_t codepoint) {
+    return utf8proc_charwidth(codepoint);
+}
 
-            terminal[row][col].ch = codepoint;
-            terminal[row][col].style = current_style;
-            col++;
+void terminal_context::InsertUtf8(uint32_t codepoint) {
+    assert(row >= 0 && row < num_rows);
+    assert(col >= 0 && col <= num_cols);
+
+    int cw = char_width(codepoint);
+    // don't insert zero-width characters
+    if (cw <= 0) return;
+    // can fit if just equal num_cols
+    if (col + cw > num_cols) {
+        if (enable_wrap) {
+            // wrap to next line
+            row ++;
+            col = 0;
+            DropFirstRowIfOverflow();
         } else {
-            // override last column
-            terminal[row][term_col - 1].ch = codepoint;
-            terminal[row][term_col - 1].style = current_style;
+            // remove tail chars until fit
+            col = num_cols - cw;
+            // remove a broken wide char
+            while (buffer[row][col].code == term_char::WIDE_TAIL)
+                col --;
         }
-    } else {
-        terminal[row][col].ch = codepoint;
-        terminal[row][col].style = current_style;
-        col++;
     }
+    if (cw > 1) {
+        // place the wide char
+        buffer[row][col].code = codepoint;
+        buffer[row][col++].style = current_style;
+        // and cw-2 spacers
+        for (int i=1; i < cw-1 && col < num_cols; i++) {
+            buffer[row][col].code = term_char::WIDE_TAIL;
+            buffer[row][col++].style = current_style;
+        }
+        // final spacer can't be inserted
+        if (col == num_cols) return;
+        codepoint = term_char::WIDE_TAIL;
+    }
+    LOG_INFO("column: %d (%d)", col, cw);
+    buffer[row][col].code = codepoint;
+    buffer[row][col++].style = current_style;
 }
 
 // clamp cursor to valid range
@@ -219,8 +231,8 @@ void terminal_context::ClampCursor() {
     // clamp col
     if (col < 0) {
         col = 0;
-    } else if (col > term_col - 1) {
-        col = term_col - 1;
+    } else if (col > num_cols - 1) {
+        col = num_cols - 1;
     }
 
     // clamp row
@@ -235,8 +247,8 @@ void terminal_context::ClampCursor() {
         // limit cursor to terminal
         if (row < 0) {
             row = 0;
-        } else if (row > term_row - 1) {
-            row = term_row - 1;
+        } else if (row > num_rows - 1) {
+            row = num_rows - 1;
         }
     }
 }
@@ -277,7 +289,7 @@ void terminal_context::WriteFull(uint8_t *data, size_t length) {
             hex += (char)data[i];
         }
     }
-    OH_LOG_INFO(LOG_APP, "Send: %{public}s", hex.c_str());
+    LOG_INFO("Send: %s", hex.c_str());
 
     int written = 0;
     while (written < length) {
@@ -368,26 +380,26 @@ void terminal_context::HandleCSI(uint8_t current) {
             if (escape_buffer == "" || escape_buffer == "0") {
                 // CSI J, CSI 0 J
                 // erase below
-                for (int i = col; i < term_col; i++) {
-                    terminal[row][i] = term_char();
+                for (int i = col; i < num_cols; i++) {
+                    buffer[row][i] = term_char();
                 }
-                for (int i = row + 1; i < term_row; i++) {
-                    std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                for (int i = row + 1; i < num_rows; i++) {
+                    std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                 }
             } else if (escape_buffer == "1") {
                 // CSI 1 J
                 // erase above
                 for (int i = 0; i < row; i++) {
-                    std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                    std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                 }
                 for (int i = 0; i <= col; i++) {
-                    terminal[row][i] = term_char();
+                    buffer[row][i] = term_char();
                 }
             } else if (escape_buffer == "2") {
                 // CSI 2 J
                 // erase all
-                for (int i = 0; i < term_row; i++) {
-                    std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                for (int i = 0; i < num_rows; i++) {
+                    std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                 }
             } else {
                 goto unknown;
@@ -397,20 +409,20 @@ void terminal_context::HandleCSI(uint8_t current) {
             if (escape_buffer == "" || escape_buffer == "0") {
                 // CSI K, CSI 0 K
                 // erase to right
-                for (int i = col; i < term_col; i++) {
-                    terminal[row][i] = term_char();
+                for (int i = col; i < num_cols; i++) {
+                    buffer[row][i] = term_char();
                 }
             } else if (escape_buffer == "1") {
                 // CSI 1 K
                 // erase to left
-                for (int i = 0; i <= col && i < term_col; i++) {
-                    terminal[row][i] = term_char();
+                for (int i = 0; i <= col && i < num_cols; i++) {
+                    buffer[row][i] = term_char();
                 }
             } else if (escape_buffer == "2") {
                 // CSI 2 K
                 // erase whole line
-                for (int i = 0; i < term_col; i++) {
-                    terminal[row][i] = term_char();
+                for (int i = 0; i < num_cols; i++) {
+                    buffer[row][i] = term_char();
                 }
             } else {
                 goto unknown;
@@ -424,9 +436,9 @@ void terminal_context::HandleCSI(uint8_t current) {
                 // insert lines from current row, add new rows from scroll bottom
                 for (int i = scroll_bottom;i >= row;i --) {
                     if (i - line >= row) {
-                        terminal[i] = terminal[i - line];
+                        buffer[i] = buffer[i - line];
                     } else {
-                        std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                        std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                     }
                 }
                 // set to first column
@@ -441,9 +453,9 @@ void terminal_context::HandleCSI(uint8_t current) {
                 // delete lines from current row, add new rows from scroll bottom
                 for (int i = row;i <= scroll_bottom;i ++) {
                     if (i + line <= scroll_bottom) {
-                        terminal[i] = terminal[i + line];
+                        buffer[i] = buffer[i + line];
                     } else {
-                        std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                        std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                     }
                 }
                 // set to first column
@@ -452,11 +464,11 @@ void terminal_context::HandleCSI(uint8_t current) {
         } else if (current == 'P') {
             // CSI Ps P, DCH, delete # characters, move right to left
             int del = read_int_or_default(1);
-            for (int i = col; i < term_col; i++) {
-                if (i + del < term_col) {
-                    terminal[row][i] = terminal[row][i + del];
+            for (int i = col; i < num_cols; i++) {
+                if (i + del < num_cols) {
+                    buffer[row][i] = buffer[row][i + del];
                 } else {
-                    terminal[row][i] = term_char();
+                    buffer[row][i] = term_char();
                 }
             }
         } else if (current == 'S') {
@@ -464,16 +476,16 @@ void terminal_context::HandleCSI(uint8_t current) {
             int line = read_int_or_default(1);
             for (int i = scroll_top; i <= scroll_bottom; i++) {
                 if (i + line <= scroll_bottom) {
-                    terminal[i] = terminal[i + line];
+                    buffer[i] = buffer[i + line];
                 } else {
-                    std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                    std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                 }
             }
         } else if (current == 'X') {
             // CSI Ps X, ECH, erase # characters, do not move others
             int del = read_int_or_default(1);
-            for (int i = col; i < col + del && i < term_col; i++) {
-                terminal[row][i] = term_char();
+            for (int i = col; i < col + del && i < num_cols; i++) {
+                buffer[row][i] = term_char();
             }
         } else if (current == 'c' && (escape_buffer == "" || escape_buffer == "0")) {
             // CSI Ps c, Send Device Attributes, Primary DA
@@ -525,7 +537,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // CSI 4 h, Insert Mode (IRM)
                     insert_mode = true;
                 } else {
-                    OH_LOG_WARN(LOG_APP, "Unknown CSI Pm h: %{public}s %{public}c",
+                    LOG_WARN("Unknown CSI Pm h: %s %c",
                                 escape_buffer.c_str(), current);
                 }
             }
@@ -538,7 +550,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // TODO
                 } else if (part == "3") {
                     // CSI ? 3 h, Enable 132 Column mode, DECCOLM
-                    ResizeTo(term_row, 132);
+                    ResizeTo(num_rows, 132);
                     ResizeWidth(132 * font_width);
                 } else if (part == "4") {
                     // CSI ? 4 h, Smooth (Slow) Scroll (DECSCLM)
@@ -551,7 +563,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     origin_mode = true;
                 } else if (part == "7") {
                     // CSI ? 7 h, Set autowrap
-                    autowrap = true;
+                    enable_wrap = true;
                 } else if (part == "12") {
                     // CSI ? 12 h, Start blinking cursor
                     // TODO
@@ -574,7 +586,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // CSI ? 2004 h, set bracketed paste mode
                     // TODO
                 } else {
-                    OH_LOG_WARN(LOG_APP, "Unknown CSI ? Pm h: %{public}s %{public}c",
+                    LOG_WARN("Unknown CSI ? Pm h: %s %c",
                                 escape_buffer.c_str(), current);
                 }
             }
@@ -586,7 +598,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // CSI 4 l, Replace Mode (IRM)
                     insert_mode = false;
                 } else {
-                    OH_LOG_WARN(LOG_APP, "Unknown CSI Pm h: %{public}s %{public}c",
+                    LOG_WARN("Unknown CSI Pm h: %s %c",
                                 escape_buffer.c_str(), current);
                 }
             }
@@ -599,7 +611,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // TODO
                 } else if (part == "3") {
                     // CSI ? 3 l, 80 Column Mode (DECCOLM)
-                    ResizeTo(term_row, 80);
+                    ResizeTo(num_rows, 80);
                     ResizeWidth(80 * font_width);
                 } else if (part == "4") {
                     // CSI ? 4 l, Jump (Fast) Scroll (DECSCLM)
@@ -612,7 +624,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     origin_mode = false;
                 } else if (part == "7") {
                     // CSI ? 7 l, Reset autowrap
-                    autowrap = false;
+                    enable_wrap = false;
                 } else if (part == "8") {
                     // CSI ? 8 l, No Auto-Repeat Keys (DECARM)
                     // TODO
@@ -629,7 +641,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // CSI ? 2004 l, reset bracketed paste mode
                     // TODO
                 } else {
-                    OH_LOG_WARN(LOG_APP, "Unknown CSI ? Pm l: %{public}s %{public}c",
+                    LOG_WARN("Unknown CSI ? Pm l: %s %c",
                                 escape_buffer.c_str(), current);
                 }
             }
@@ -660,9 +672,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     current_style.blink = true;
                 } else if (param == 7) {
                     // inverse, flip foreground and background color, CSI 7 m
-                    std::swap(current_style.fg_red, current_style.bg_red);
-                    std::swap(current_style.fg_green, current_style.bg_green);
-                    std::swap(current_style.fg_blue, current_style.bg_blue);
+                    std::swap(current_style.fore, current_style.back);
                 } else if (param == 9) {
                     // set strikethrough, CSI 9 m
                     // TODO
@@ -683,14 +693,10 @@ void terminal_context::HandleCSI(uint8_t current) {
                     current_style.blink = false;
                 } else if (param == 27) {
                     // set positive (not inverse), CSI 27 m
-                    std::swap(current_style.fg_red, current_style.bg_red);
-                    std::swap(current_style.fg_green, current_style.bg_green);
-                    std::swap(current_style.fg_blue, current_style.bg_blue);
+                    std::swap(current_style.fore, current_style.back);
                 } else if (30 <= param && param <= 37) {
                     // foreground ansi 0..7
-                    current_style.fg_red = predefined_colors[param-30][0] / 255.0;
-                    current_style.fg_green = predefined_colors[param-30][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[param-30][2] / 255.0;
+                    current_style.fore = predefined_colors[param - 30];
                 } else if (param == 38 || param == 48) {
                     // foreground color: extended color, CSI 38 : ... m
                     // background color: extended color, CSI 48 : ... m
@@ -701,13 +707,9 @@ void terminal_context::HandleCSI(uint8_t current) {
                             int color_index = std::stoi(parts[++i]);
                             uint32_t color = TrueColorFrom(color_index);
                             if (param == 38) {
-                                current_style.fg_red = ((color >> 16) & 0xff) / 255.0;
-                                current_style.fg_green = ((color >> 8) & 0xff)  / 255.0;
-                                current_style.fg_blue = ((color >> 0) & 0xff)  / 255.0;
+                                current_style.fore = color;
                             } else {
-                                current_style.bg_red = ((color >> 16) & 0xff) / 255.0;
-                                current_style.bg_green = ((color >> 8) & 0xff) / 255.0;
-                                current_style.bg_blue = ((color >> 0) & 0xff) / 255.0;
+                                current_style.back = color;
                             }
                         } else if (color_type == 2 && i + 3 < parts.size()) { // RGB mode
                             // specified rgb
@@ -715,43 +717,29 @@ void terminal_context::HandleCSI(uint8_t current) {
                             int g = std::stoi(parts[++i]);
                             int b = std::stoi(parts[++i]);
                             if (param == 38) {
-                                current_style.fg_red = r / 255.0;
-                                current_style.fg_green = g / 255.0;
-                                current_style.fg_blue = b / 255.0;
+                                current_style.fore.set_rgb(r,g,b);
                             } else {
-                                current_style.bg_red = r / 255.0;
-                                current_style.bg_green = g / 255.0;
-                                current_style.bg_blue = b / 255.0;
+                                current_style.back.set_rgb(r,g,b);
                             }
                         }
                     }
                 } else if (param == 39) {
                     // default foreground
-                    current_style.fg_red = predefined_colors[black][0] / 255.0;
-                    current_style.fg_green = predefined_colors[black][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[black][2] / 255.0;
+                    current_style.fore = predefined_colors[black];
                 } else if (40 <= param && param <= 47) {
                     // background ansi 0..7
-                    current_style.bg_red = predefined_colors[param-40][0] / 255.0;
-                    current_style.bg_green = predefined_colors[param-40][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[param-40][2] / 255.0;
+                    current_style.back = predefined_colors[param - 40];
                 } else if (param == 49) {
                     // default background
-                    current_style.bg_red = predefined_colors[white][0] / 255.0;
-                    current_style.bg_green = predefined_colors[white][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[white][2] / 255.0;
+                    current_style.back = predefined_colors[white];
                 } else if (90 <= param && param <= 97) {
                     // foreground ansi 8..15
-                    current_style.fg_red = predefined_colors[8 + param - 90][0] / 255.0;
-                    current_style.fg_green = predefined_colors[8 + param - 90][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[8 + param - 90][2] / 255.0;
+                    current_style.fore = predefined_colors[8 + param - 90];
                 } else if (100 <= param && param <= 107) {
                     // background ansi 8..15
-                    current_style.bg_red = predefined_colors[8 + param - 100][0] / 255.0;
-                    current_style.bg_green = predefined_colors[8 + param - 100][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[8 + param - 100][2] / 255.0;
+                    current_style.back = predefined_colors[8 + param - 100];
                 } else {
-                    OH_LOG_WARN(LOG_APP, "Unknown CSI Pm m: %{public}s from %{public}s %{public}c",
+                    LOG_WARN("Unknown CSI Pm m: %s from %s %c",
                                 part.c_str(), escape_buffer.c_str(), current);
                 }
             }
@@ -775,7 +763,7 @@ void terminal_context::HandleCSI(uint8_t current) {
             // CSI Ps ; Ps r, Set Scrolling Region [top;bottom]
             std::vector<std::string> parts = SplitString(escape_buffer, ";");
             int new_top = 1;
-            int new_bottom = term_row;
+            int new_bottom = num_rows;
             if (parts.size() == 2) {
                 // CSI Ps ; Ps r
                 sscanf(parts[0].c_str(), "%d", &new_top);
@@ -787,13 +775,13 @@ void terminal_context::HandleCSI(uint8_t current) {
                 // full size of window
                 // CSI r
                 new_top = 0;
-                new_bottom = term_row - 1;
+                new_bottom = num_rows - 1;
             } else if (parts.size() == 1) {
                 // CSI Ps r
                 sscanf(parts[0].c_str(), "%d", &new_top);
                 // convert to 1-based
                 new_top --;
-                new_bottom = term_row - 1;
+                new_bottom = num_rows - 1;
             } else {
                 goto unknown;
             }
@@ -812,17 +800,17 @@ void terminal_context::HandleCSI(uint8_t current) {
                     escape_buffer == "")) {
             // CSI Ps @, ICH, Insert Ps (Blank) Character(s)
             int count = read_int_or_default(1);
-            for (int i = term_col - 1; i >= col; i--) {
+            for (int i = num_cols - 1; i >= col; i--) {
                 if (i - col < count) {
-                    terminal[row][i].ch = ' ';
+                    buffer[row][i].code = ' ';
                 } else {
-                    terminal[row][i] = terminal[row][i - count];
+                    buffer[row][i] = buffer[row][i - count];
                 }
             }
         } else {
 unknown:
             // unknown
-            OH_LOG_WARN(LOG_APP, "Unknown escape sequence in CSI: %{public}s %{public}c",
+            LOG_WARN("Unknown escape sequence in CSI: %s %c",
                         escape_buffer.c_str(), current);
         }
         escape_state = state_idle;
@@ -833,7 +821,7 @@ unknown:
     } else {
         // invalid byte
         // unknown
-        OH_LOG_WARN(LOG_APP, "Unknown escape sequence in CSI: %{public}s %{public}c",
+        LOG_WARN("Unknown escape sequence in CSI: %s %c",
                     escape_buffer.c_str(), current);
         escape_state = state_idle;
     }
@@ -896,9 +884,9 @@ void terminal_context::Parse(uint8_t input) {
             if (row == scroll_top) {
                 // shift rows down
                 for (int i = scroll_bottom;i > scroll_top;i--) {
-                    terminal[i] = terminal[i-1];
+                    buffer[i] = buffer[i-1];
                 }
-                std::fill(terminal[scroll_top].begin(), terminal[scroll_top].end(), term_char());
+                std::fill(buffer[scroll_top].begin(), buffer[scroll_top].end(), term_char());
             } else {
                 row --;
                 ClampCursor();
@@ -909,10 +897,10 @@ void terminal_context::Parse(uint8_t input) {
             escape_state = state_dcs;
         } else if (input == '8' && escape_buffer == "#") {
             // ESC # 8, DECALN fill viewport with a test pattern (E)
-            for (int i = 0;i < term_row;i++) {
-                for (int j = 0;j < term_col;j++) {
-                    terminal[i][j] = term_char();
-                    terminal[i][j].ch = 'E';
+            for (int i = 0;i < num_rows;i++) {
+                for (int j = 0;j < num_cols;j++) {
+                    buffer[i][j] = term_char();
+                    buffer[i][j].code = 'E';
                 }
             }
             escape_state = state_idle;
@@ -934,7 +922,7 @@ void terminal_context::Parse(uint8_t input) {
             escape_buffer += input;
         } else {
             // unknown
-            OH_LOG_WARN(LOG_APP, "Unknown escape sequence after ESC: %{public}s %{public}c",
+            LOG_WARN("Unknown escape sequence after ESC: %s %c",
                         escape_buffer.c_str(), input);
             escape_state = state_idle;
         }
@@ -948,14 +936,14 @@ void terminal_context::Parse(uint8_t input) {
                 // OSC 52 ; c ; BASE64 BEL
                 // copy to clipboard
                 std::string base64 = parts[2];
-                OH_LOG_INFO(LOG_APP, "Copy to pasteboard in native: %{public}s",
+                LOG_INFO("Copy to pasteboard in native: %s",
                             base64.c_str());
                 Copy(base64);
             } else if (parts.size() == 3 && parts[0] == "52" && parts[1] == "c" && parts[2] == "?") {
                 // OSC 52 ; c ; ? BEL
                 // paste from clipboard
                 RequestPaste();
-                OH_LOG_INFO(LOG_APP, "Request Paste from pasteboard: %{public}s", escape_buffer.c_str());
+                LOG_INFO("Request Paste from pasteboard: %s", escape_buffer.c_str());
             }
             escape_state = state_idle;
         } else if (input == '\\' && escape_buffer.size() > 0 && escape_buffer[escape_buffer.size() - 1] == '\x1b') {
@@ -981,7 +969,7 @@ void terminal_context::Parse(uint8_t input) {
             escape_buffer += input;
         } else {
             // unknown
-            OH_LOG_WARN(LOG_APP, "Unknown escape sequence in OSC: %{public}s %{public}c",
+            LOG_WARN("Unknown escape sequence in OSC: %s %c",
                         escape_buffer.c_str(), input);
             escape_state = state_idle;
         }
@@ -994,7 +982,7 @@ void terminal_context::Parse(uint8_t input) {
             escape_buffer += input;
         } else {
             // unknown
-            OH_LOG_WARN(LOG_APP, "Unknown escape sequence in DCS: %{public}s %{public}c",
+            LOG_WARN("Unknown escape sequence in DCS: %s %c",
                         escape_buffer.c_str(), input);
             escape_state = state_idle;
         }
@@ -1005,8 +993,8 @@ void terminal_context::Parse(uint8_t input) {
                 // printable
                 if (insert_mode) {
                     // move characters rightward
-                    for (int i = term_col - 1;i > col;i--) {
-                        terminal[row][i] = terminal[row][i - 1];
+                    for (int i = num_cols - 1;i > col;i--) {
+                        buffer[row][i] = buffer[row][i - 1];
                     }
                 }
                 InsertUtf8(input);
@@ -1048,7 +1036,7 @@ void terminal_context::Parse(uint8_t input) {
             } else if (input == '\t') {
                 // goto next tab stop
                 col ++;
-                while (col < term_col && !tab_stops[col]) {
+                while (col < num_cols && !tab_stops[col]) {
                     col ++;
                 }
                 ClampCursor();
@@ -1160,7 +1148,7 @@ void terminal_context::Worker() {
                         hex += (char)buffer[i];
                     }
                 }
-                OH_LOG_INFO(LOG_APP, "Got: %{public}s", hex.c_str());
+                LOG_INFO("Got: %s", hex.c_str());
 
                 // parse output
                 pthread_mutex_lock(&lock);
@@ -1170,7 +1158,7 @@ void terminal_context::Worker() {
                 pthread_mutex_unlock(&lock);
             } else if (r < 0 && errno == EIO) {
                 // handle child exit
-                OH_LOG_INFO(LOG_APP, "Program exited: %{public}ld %{public}d", r, errno);
+                LOG_INFO("Program exited: %ld %d", r, errno);
                 // relaunch
                 pthread_mutex_lock(&lock);
                 close(fd);
@@ -1202,7 +1190,7 @@ void terminal_context::Worker() {
         std::string paste = GetPaste();
         if (paste.size() > 0) {
             // send OSC 52 ; c ; BASE64 ST
-            OH_LOG_INFO(LOG_APP, "Paste from pasteboard: %{public}s",
+            LOG_INFO("Paste from pasteboard: %s",
                         paste.c_str());
             std::string resp = "\x1b]52;c;" + paste + "\x1b\\";
             WriteFull((uint8_t *)resp.c_str(), resp.size());
@@ -1215,8 +1203,8 @@ void terminal_context::Worker() {
 // assume lock is held
 void terminal_context::Fork() {
     struct winsize ws = {};
-    ws.ws_col = term_col;
-    ws.ws_row = term_row;
+    ws.ws_col = num_cols;
+    ws.ws_row = num_rows;
 
     int pid = forkpty(&fd, nullptr, nullptr, &ws);
     if (!pid) {
@@ -1388,9 +1376,9 @@ static void BuildFontAtlas() {
         
         FT_Set_Pixel_Sizes(face, 0, font_height);
         // Note: in 26.6 fractional pixel format
-        OH_LOG_INFO(LOG_APP,
-                    "Ascender: %{public}d Descender: %{public}d Height: %{public}d XMin: %{public}ld XMax: %{public}ld "
-                    "YMin: %{public}ld YMax: %{public}ld XScale: %{public}ld YScale: %{public}ld",
+        LOG_INFO(
+                    "Ascender: %d Descender: %d Height: %d XMin: %ld XMax: %ld "
+                    "YMin: %ld YMax: %ld XScale: %ld YScale: %ld",
                     face->ascender, face->descender, face->height, face->bbox.xMin, face->bbox.xMax, face->bbox.yMin,
                     face->bbox.yMax, face->size->metrics.x_scale, face->size->metrics.y_scale);
         
@@ -1410,11 +1398,11 @@ static void BuildFontAtlas() {
                 continue;
             }
 
-            OH_LOG_INFO(LOG_APP,
-                        "Weight: %{public}d Char: %{public}d(0x%{public}x) Glyph: %{public}d %{public}d Left: "
-                        "%{public}d "
-                        "Top: %{public}d "
-                        "Advance: %{public}ld",
+            LOG_INFO(
+                        "Weight: %d Char: %d(0x%x) Glyph: %d %d Left: "
+                        "%d "
+                        "Top: %d "
+                        "Advance: %ld",
                         fnt.weight, charCode, charCode, face->glyph->bitmap.width, face->glyph->bitmap.rows, face->glyph->bitmap_left,
                         face->glyph->bitmap_top, face->glyph->advance.x);
 
@@ -1490,7 +1478,6 @@ static void BuildFontAtlas() {
     assert(err == GL_NO_ERROR);
     }
 
-    OH_LOG_INFO(LOG_APP, "map height: %{public}d", atlas_height);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, atlas_width, atlas_height, 0, GL_RED, GL_UNSIGNED_BYTE, bitmap.data());
 
     // set texture options
@@ -1518,7 +1505,10 @@ static void Draw() {
     uint64_t current_msec = tv.tv_sec * 1000 + tv.tv_usec / 1000;
 
     // clear buffer with background color
-    glClearColor(predefined_colors[white][0] / 255.0, predefined_colors[white][1] / 255.0, predefined_colors[white][2] / 255.0, 1.0f);
+    {
+        term_style::color back(predefined_colors[white]);
+        glClearColor(back.u.red / 255.0, back.u.green / 255.0, back.u.blue / 255.0, 1.0);
+    }
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // update surface size
@@ -1545,13 +1535,13 @@ static void Draw() {
     static std::vector<GLfloat> background_color_data;
 
     vertex_pass0_data.clear();
-    vertex_pass0_data.reserve(term.term_row * term.term_col * 24);
+    vertex_pass0_data.reserve(term.num_rows * term.num_cols * 24);
     vertex_pass1_data.clear();
-    vertex_pass1_data.reserve(term.term_row * term.term_col * 24);
+    vertex_pass1_data.reserve(term.num_rows * term.num_cols * 24);
     text_color_data.clear();
-    text_color_data.reserve(term.term_row * term.term_col * 18);
+    text_color_data.reserve(term.num_rows * term.num_cols * 18);
     background_color_data.clear();
-    background_color_data.reserve(term.term_row * term.term_col * 18);
+    background_color_data.reserve(term.num_rows * term.num_cols * 18);
 
     // ensure at least one line shown, for very large scroll_offset
     int scroll_rows = scroll_offset / font_height;
@@ -1566,8 +1556,8 @@ static void Draw() {
         float y = aligned_height - (i + 1) * font_height;
         int i_row = i - scroll_rows;
         std::vector<term_char> ch;
-        if (i_row >= 0 && i_row < term.term_row) {
-            ch = term.terminal[i_row];
+        if (i_row >= 0 && i_row < term.num_rows) {
+            ch = term.buffer[i_row];
         } else if (i_row < 0 && (int)term.history.size() + i_row >= 0) {
             ch = term.history[term.history.size() + i_row];
         } else {
@@ -1576,16 +1566,16 @@ static void Draw() {
 
         int cur_col = 0;
         for (auto c : ch) {
-            uint32_t codepoint = c.ch;
-            auto key = std::pair<uint32_t, enum font_weight>(c.ch, c.style.weight);
+            uint32_t codepoint = c.code;
+            auto key = std::pair<uint32_t, enum font_weight>(c.code, c.style.weight);
             auto it = characters.find(key);
             if (it == characters.end())
-                it = characters.find(std::make_pair(c.ch, font_weight::regular));
+                it = characters.find(std::make_pair(c.code, font_weight::regular));
             if (it == characters.end()) {
                 // reload font to locate it
-                OH_LOG_WARN(LOG_APP, "Missing character: %{public}d of weight %{public}d", c.ch, c.style.weight);
+                LOG_WARN("Missing character: %d of weight %d", c.code, c.style.weight);
                 need_rebuild_atlas = true;
-                codepoints_to_load.insert(c.ch);
+                codepoints_to_load.insert(c.code);
 
                 // we don't have the character, fallback to .notdef
                 it = characters.find(std::pair<uint32_t, enum font_weight>(0, c.style.weight));
@@ -1630,28 +1620,12 @@ static void Draw() {
             GLfloat g_text_color_buffer_data[18];
             GLfloat g_background_color_buffer_data[18];
 
-            if (i_row == term.row && cur_col == term.col && term.show_cursor) {
-                // cursor
-                for (int i = 0; i < 6; i++) {
-                    g_text_color_buffer_data[i * 3 + 0] = 1.0 - c.style.fg_red;
-                    g_text_color_buffer_data[i * 3 + 1] = 1.0 - c.style.fg_green;
-                    g_text_color_buffer_data[i * 3 + 2] = 1.0 - c.style.fg_blue;
-                    g_background_color_buffer_data[i * 3 + 0] = 1.0 - c.style.bg_red;
-                    g_background_color_buffer_data[i * 3 + 1] = 1.0 - c.style.bg_green;
-                    g_background_color_buffer_data[i * 3 + 2] = 1.0 - c.style.bg_blue;
-                }
-            } else {
-                for (int i = 0; i < 6; i++) {
-                    g_text_color_buffer_data[i * 3 + 0] = c.style.fg_red;
-                    g_text_color_buffer_data[i * 3 + 1] = c.style.fg_green;
-                    g_text_color_buffer_data[i * 3 + 2] = c.style.fg_blue;
-                    g_background_color_buffer_data[i * 3 + 0] = c.style.bg_red;
-                    g_background_color_buffer_data[i * 3 + 1] = c.style.bg_green;
-                    g_background_color_buffer_data[i * 3 + 2] = c.style.bg_blue;
-                }
+            for (int i = 0; i < 6; i++) {
+                c.style.fore.put_f3(&g_text_color_buffer_data[i*3]);
+                c.style.back.put_f3(&g_background_color_buffer_data[i*3]);
             }
 
-            if (term.reverse_video) {
+            if ((term.show_cursor && i_row == term.row && cur_col == term.col) ^ term.reverse_video) {
                 // invert all colors
                 for (int i = 0; i < 18; i++) {
                     g_text_color_buffer_data[i] = 1.0 - g_text_color_buffer_data[i];
@@ -1659,8 +1633,8 @@ static void Draw() {
                 }
             }
 
+            // blink: for every 1s, in 0.5s, text color equals to back ground color
             if (c.style.blink && current_msec % 1000 > 500) {
-                // for every 1s, in 0.5s, text color equals to back ground color
                 for (int i = 0; i < 18; i++) {
                     g_text_color_buffer_data[i] = g_background_color_buffer_data[i];
                 }
@@ -1670,7 +1644,7 @@ static void Draw() {
             background_color_data.insert(background_color_data.end(), &g_background_color_buffer_data[0],
                                          &g_background_color_buffer_data[18]);
 
-            x += w < font_width * 1.33 ? font_width : 2.0 * font_width;
+            x += font_width;
             cur_col++;
         }
     }
@@ -1736,7 +1710,7 @@ static void *RenderWorker(void *) {
     if (info_log_length > 0) {
         std::vector<char> vertex_shader_error_message(info_log_length + 1);
         glGetShaderInfoLog(vertex_shader_id, info_log_length, NULL, &vertex_shader_error_message[0]);
-        OH_LOG_ERROR(LOG_APP, "Failed to build vertex shader: %{public}s", &vertex_shader_error_message[0]);
+        LOG_ERROR("Failed to build vertex shader: %s", &vertex_shader_error_message[0]);
     }
 
     GLuint fragment_shader_id = glCreateShader(GL_FRAGMENT_SHADER);
@@ -1769,7 +1743,7 @@ static void *RenderWorker(void *) {
     if (info_log_length > 0) {
         std::vector<char> fragment_shader_error_message(info_log_length + 1);
         glGetShaderInfoLog(fragment_shader_id, info_log_length, NULL, &fragment_shader_error_message[0]);
-        OH_LOG_ERROR(LOG_APP, "Failed to build fragment shader: %{public}s", &fragment_shader_error_message[0]);
+        LOG_ERROR("Failed to build fragment shader: %s", &fragment_shader_error_message[0]);
     }
 
     GLuint program_id = glCreateProgram();
@@ -1781,7 +1755,7 @@ static void *RenderWorker(void *) {
     if (info_log_length > 0) {
         std::vector<char> link_program_error_message(info_log_length + 1);
         glGetProgramInfoLog(program_id, info_log_length, NULL, &link_program_error_message[0]);
-        OH_LOG_ERROR(LOG_APP, "Failed to link program: %{public}s", &link_program_error_message[0]);
+        LOG_ERROR("Failed to link program: %s", &link_program_error_message[0]);
     }
 
     surface_location = glGetUniformLocation(program_id, "surface");
@@ -1890,7 +1864,7 @@ static void *RenderWorker(void *) {
             for (auto t : time) {
                 sum += t;
             }
-            OH_LOG_INFO(LOG_APP, "FPS: %{public}d, %{public}ld ms per draw", fps, sum / fps);
+            LOG_INFO("FPS: %d, %ld ms per draw", fps, sum / fps);
             fps = 0;
             time.clear();
         }
