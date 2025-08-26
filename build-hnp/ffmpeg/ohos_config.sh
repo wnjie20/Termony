@@ -27,10 +27,10 @@ FF_CONFIG_OPTIONS="
     --enable-nonfree
 "
 
-if [ ${FFMPEG_PLAT} = "${OHOS_ARCH}" ]; then
+if [ ${FFMPEG_PLAT} = "aarch64" ]; then
 
 FF_CONFIG_OPTIONS="$FF_CONFIG_OPTIONS
-    --arch=${OHOS_ARCH}
+    --arch=aarch64
     --target-os=linux
     --enable-cross-compile
     --cc=${LLVM_PATH}/bin/clang
@@ -54,24 +54,24 @@ FF_CONFIG_OPTIONS+="
 fi
 
 EXTRA_CFLAGS="
-    --target=${OHOS_ARCH}-linux-ohos
+    --target=aarch64-linux-ohos
     --sysroot=${SYSROOT_PATH}
 "
 EXTRA_LDFLAGS="
-    --target=${OHOS_ARCH}-linux-ohos
+    --target=aarch64-linux-ohos
     --sysroot=${SYSROOT_PATH}
 "
 
 if [ ${USE_CLANG_COVERAGE} = "true" ]; then
     EXTRA_CFLAGS="
-        --target=${OHOS_ARCH}-linux-ohos
+        --target=aarch64-linux-ohos
         --sysroot=${SYSROOT_PATH}
         --coverage
         -mllvm
         -limited-coverage-experimental=true
     "
     EXTRA_LDFLAGS="
-        --target=${OHOS_ARCH}-linux-ohos
+        --target=aarch64-linux-ohos
         --sysroot=${SYSROOT_PATH}
         --coverage
         -fno-use-cxa-atexit
