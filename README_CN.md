@@ -16,58 +16,22 @@ Termux for HarmonyOS Computer。开发进行中。
 
 内置软件包：
 
-- aria2
-- bash
-- binutils
-- busybox
-- c-ares
-- coremark
-- curl
-- [elf-loader](https://github.com/MikhailProg/elf) (你可以运行没有可执行权限的可执行文件！例如 `cp /data/app/bin/bash ~/ && loader ~/bash`)
-- expat
-- fastfetch
-- fish
-- gcc
-- gdb
-- gettext
-- git
-- glib
-- gmp
-- hdc
-- htop
-- kbd
-- libarchive
-- libevent
-- libffi
-- libidn2
-- libunistring
-- lz4
-- make
-- mpc
-- mpfr
-- ncnn
-- ncurses
-- openssh
-- openssl
-- pcre2
-- proot
-- python
-- qemu (你可以运行没有可执行权限的可执行文件！例如 `cp /data/app/bin/bash ~/ && qemu-aarch64 ~/bash`)
-- qemu-vroot (patch 过的 qemu 以模拟 proot 行为)
-- readline
-- sl
-- strace
-- stream
-- talloc
-- tar
-- tmux
-- tree
-- vim
-- vkpeak
-- xxhash
-- xz
-- yyjson
-- zstd
+||||||
+| --- | --- | --- | --- | --- |
+| aria2 | bash | binutils | busybox | c-ares |
+| coremark | curl | elf-loader | expat | fastfetch |
+| fish | gcc | gdb | gettext | git |
+| glib | gmp | hdc | htop | kbd |
+|lib{archive|event|ffi|idn2|unistring}|
+| lz4 | make | mpc | mpfr | ncnn |
+|ncurses|openssh|openssl|pcre2|proot|
+|python|qemu|qemu-vroot|readline|sl|
+|strace|stream|talloc|tar|tmux|
+|tree|vim|vkpeak|xxhash|xz|
+|yyjson|zstd|
+
+- [elf-loader](https://github.com/MikhailProg/elf): (你可以运行没有可执行权限的可执行文件！例如 `cp /data/app/bin/bash ~/ && loader ~/bash`)
+- qemu{,vroot}: (你可以运行没有可执行权限的可执行文件！例如 `cp /data/app/bin/bash ~/ && qemu-aarch64 ~/bash`)
 
 小技巧：你可以在内置终端应用中使用这些工具 `/data/service/hnp`：
 
@@ -90,12 +54,13 @@ if [ -d "/data/service/hnp/base.org/base_1.0" ]; then
 fi
 ```
 
-但是，系统自带的终端应用没有映射 R+X 页面的权限，因此不能在那里使用 elf 加载器。你可以在 Termony 中使用它。此外，如果你升级了 Termony，公共 HNP 安装路径 `/data/service/hnp` 不会更新。你需要重新安装 Termony 才能获得最新版本。
+HiShell 和其他 debug 模式的 app 也可以使用 elf 加载器，尽管这可能因系统更新而改变。
+如果你升级了 Termony，公共 HNP 安装路径 `/data/service/hnp` 不会更新。你需要重新安装 Termony 才能获得最新版本。
 
 终端特性：
 
 - 基本的转义序列支持
-- 通过上下文菜单粘贴（右键单击激活）
+- 通过右键菜单粘贴
 - 在命令行中通过 pbcopy/pbpaste 复制/粘贴（基于 OSC52 转义序列）
 
 ### 在新的根文件系统中运行

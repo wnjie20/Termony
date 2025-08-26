@@ -1,55 +1,57 @@
 // for standalone build to test on Linux:
-// g++ terminal.cpp -I/usr/include/freetype2 -DSTANDALONE -lfreetype -lGLESv2 -lglfw -o terminal
+// clang++ -std=c++17 terminal.cpp -I/usr/include/freetype2 -DSTANDALONE -lfreetype -lutf8proc -lGLESv2 -lglfw -o terminal
 
 #include "terminal.h"
+#include "freetype/ftmm.h"
+#include "utf8proc/utf8proc.h"
 #include <GLES3/gl32.h>
 #include <algorithm>
-#include <assert.h>
+#include <cassert>
+#include <cstdarg>
 #include <cstdint>
 #include <deque>
-#include <fcntl.h>
 #include <map>
-#include <poll.h>
-#include <pty.h>
 #include <set>
-#include <stdint.h>
 #include <string>
+#include <vector>
+#include <fcntl.h>
 #include <sys/time.h>
 #include <unistd.h>
-#include <vector>
-#include <array>
+#include <poll.h>
+#include <pty.h>
 #include <pthread.h>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
 #ifdef STANDALONE
-// https://stackoverflow.com/questions/5343190/how-do-i-replace-all-instances-of-a-string-with-another-string
-std::string ReplaceString(std::string subject, const std::string& search,
-                          const std::string& replace) {
-    size_t pos = 0;
-    while ((pos = subject.find(search, pos)) != std::string::npos) {
-         subject.replace(pos, search.length(), replace);
-         pos += replace.length();
-    }
-    return subject;
-}
-
-void CustomPrintf(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    std::string new_fmt = fmt;
-    new_fmt = ReplaceString(new_fmt, "%{public}", "%");
-    new_fmt += "\n";
-    vfprintf(stderr, new_fmt.c_str(), args);
-}
-#define OH_LOG_ERROR(tag, fmt, ...) CustomPrintf(fmt, __VA_ARGS__)
-#define OH_LOG_INFO(tag, fmt, ...) CustomPrintf(fmt, __VA_ARGS__)
-#define OH_LOG_WARN(tag, fmt, ...) CustomPrintf(fmt, __VA_ARGS__)
+#define LOG_INFO(fmt, ...) fprintf(stderr, fmt "\n", __VA_ARGS__)
+#define LOG_WARN(fmt, ...) fprintf(stderr, fmt "\n", __VA_ARGS__)
+#define LOG_ERROR(fmt, ...) fprintf(stderr, fmt "\n", __VA_ARGS__)
 #else
 #include "hilog/log.h"
-#undef LOG_TAG
-#define LOG_TAG "testTag"
+#undef LOG_DEBUG
+#undef LOG_INFO
+#undef LOG_WARN
+#undef LOG_ERROR
+#undef LOG_FATAL
+void hiprintf(int level, const char * fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    constexpr int bufsz = 8192;
+    char buf[bufsz];
+    if (vsnprintf(buf, bufsz, fmt, args) > 0) {
+        OH_LOG_Print(LOG_APP, (LogLevel)level, 0, "testTag", "%{public}s", buf);
+    }
+    va_end(args);
+}
+// supress logs
+//#define hiprintf(...)
+#define LOG_DEBUG(...) hiprintf(3, __VA_ARGS__)
+#define LOG_INFO(...) hiprintf(4, __VA_ARGS__)
+#define LOG_WARN(...) hiprintf(5, __VA_ARGS__)
+#define LOG_ERROR(...) hiprintf(6, __VA_ARGS__)
+#define LOG_FATAL(...) hiprintf(7, __VA_ARGS__)
 #endif
 
 // docs for escape codes:
@@ -64,313 +66,31 @@ void CustomPrintf(const char *fmt, ...) {
 // Pm: list of Ps, separated by ;
 // Pt: text parameter of printable characters
 
-enum term_colors {
-    brblack,
-    black,
-    brgreen,
-    bryellow,
-    brblue,
-    brcyan,
-    white,
-    brwhite,
-    yellow,
-    brred,
-    red,
-    magenta,
-    brmagenta,
-    blue,
-    cyan,
-    green,
-    max_term_color
-};
-
 // solarized light
-static std::array<int, 3> predefined_colors[max_term_color] = {
-    [brblack] = { 0, 43, 54 },
-    [black] = { 7, 54, 66 },
-    [brgreen] = { 88, 110, 117 },
-    [bryellow] = { 101, 123, 131 },
-    [brblue] = { 131, 148, 150 },
-    [brcyan] = { 147, 161, 161 },
-    [white] = { 238, 232, 213 },
-    [brwhite] = { 253, 246, 227 },
-    [yellow] = { 181, 137, 0 },
-    [brred] = { 203, 75, 22 },
-    [red] = { 220, 50, 47 },
-    [magenta] = { 221, 54, 130 },
-    [brmagenta] = { 108, 113, 196 },
-    [blue] = { 38, 139, 210 },
-    [cyan] = { 42, 161, 152 },
-    [green] = { 13, 153, 0 },
+static uint32_t predefined_colors[max_term_color] = {
+    [black] = PACK_RGB( 7, 54, 66 ),
+    [red] = PACK_RGB( 220, 50, 47 ),
+    [green] = PACK_RGB( 13, 153, 0 ),
+    [yellow] = PACK_RGB( 181, 137, 0 ),
+    [blue] = PACK_RGB( 38, 139, 210 ),
+    [magenta] = PACK_RGB( 221, 54, 130 ),
+    [cyan] = PACK_RGB( 42, 161, 152 ),
+    [white] = PACK_RGB( 238, 232, 213 ),
+
+    [brblack] = PACK_RGB( 0, 43, 54 ),
+    [brred] = PACK_RGB( 203, 75, 22 ),
+    [brgreen] = PACK_RGB( 88, 110, 117 ),
+    [bryellow] = PACK_RGB( 101, 123, 131 ),
+    [brblue] = PACK_RGB( 131, 148, 150 ),
+    [brmagenta] = PACK_RGB( 108, 113, 196 ),
+    [brcyan] = PACK_RGB( 147, 161, 161 ),
+    [brwhite] = PACK_RGB( 253, 246, 227 ),
 };
 
 term_style::term_style() {
-    fg_red = predefined_colors[black][0] / 255.0;
-    fg_green = predefined_colors[black][1] / 255.0;
-    fg_blue = predefined_colors[black][2] / 255.0;
-    bg_red = predefined_colors[white][0] / 255.0;
-    bg_green = predefined_colors[white][1] / 255.0;
-    bg_blue = predefined_colors[white][2] / 255.0;
+    fore = predefined_colors[black];
+    back = predefined_colors[white];
 }
-
-uint32_t color_map_256[] = {
-    0x000000,
-    0x800000,
-    0x008000,
-    0x808000,
-    0x000080,
-    0x800080,
-    0x008080,
-    0xc0c0c0,
-    0x808080,
-    0xff0000,
-    0x00ff00, 
-    0xffff00, 
-    0x0000ff,
-    0xff00ff,
-    0x00ffff,
-    0xffffff,
-    0x000000,
-    0x00005f,
-    0x000087,
-    0x0000af,
-    0x0000d7,
-    0x0000ff,
-    0x005f00,
-    0x005f5f,
-    0x005f87,
-    0x005faf,
-    0x005fd7,
-    0x005fff,
-    0x008700,
-    0x00875f,
-    0x008787,
-    0x0087af,
-    0x0087d7,
-    0x0087ff,
-    0x00af00,
-    0x00af5f,
-    0x00af87,
-    0x00afaf,
-    0x00afd7,
-    0x00afff,
-    0x00d700,
-    0x00d75f,
-    0x00d787,
-    0x00d7af,
-    0x00d7d7,
-    0x00d7ff,
-    0x00ff00,
-    0x00ff5f,
-    0x00ff87,
-    0x00ffaf,
-    0x00ffd7,
-    0x00ffff,
-    0x5f0000,
-    0x5f005f,
-    0x5f0087,
-    0x5f00af,
-    0x5f00d7,
-    0x5f00ff,
-    0x5f5f00,
-    0x5f5f5f,
-    0x5f5f87,
-    0x5f5faf,
-    0x5f5fd7,
-    0x5f5fff,
-    0x5f8700,
-    0x5f875f,
-    0x5f8787,
-    0x5f87af,
-    0x5f87d7,
-    0x5f87ff,
-    0x5faf00,
-    0x5faf5f,
-    0x5faf87,
-    0x5fafaf,
-    0x5fafd7,
-    0x5fafff,
-    0x5fd700,
-    0x5fd75f,
-    0x5fd787,
-    0x5fd7af,
-    0x5fd7d7,
-    0x5fd7ff,
-    0x5fff00,
-    0x5fff5f,
-    0x5fff87,
-    0x5fffaf,
-    0x5fffd7,
-    0x5fffff,
-    0x870000,
-    0x87005f,
-    0x870087,
-    0x8700af,
-    0x8700d7,
-    0x8700ff,
-    0x875f00,
-    0x875f5f,
-    0x875f87,
-    0x875faf,
-    0x875fd7,
-    0x875fff,
-    0x878700, 
-    0x87875f, 
-    0x878787, 
-    0x8787af, 
-    0x8787d7, 
-    0x8787ff,
-    0x87af00, 
-    0x87af5f, 
-    0x87af87, 
-    0x87afaf, 
-    0x87afd7, 
-    0x87afff,
-    0x87d700, 
-    0x87d75f, 
-    0x87d787, 
-    0x87d7af, 
-    0x87d7d7, 
-    0x87d7ff,
-    0x87ff00, 
-    0x87ff5f, 
-    0x87ff87, 
-    0x87ffaf, 
-    0x87ffd7, 
-    0x87ffff,
-    0xaf0000, 
-    0xaf005f, 
-    0xaf0087, 
-    0xaf00af, 
-    0xaf00d7, 
-    0xaf00ff,
-    0xaf5f00, 
-    0xaf5f5f, 
-    0xaf5f87, 
-    0xaf5faf, 
-    0xaf5fd7, 
-    0xaf5fff,
-    0xaf8700, 
-    0xaf875f, 
-    0xaf8787, 
-    0xaf87af, 
-    0xaf87d7, 
-    0xaf87ff,
-    0xafaf00, 
-    0xafaf5f, 
-    0xafaf87, 
-    0xafafaf, 
-    0xafafd7, 
-    0xafafff,
-    0xafd700, 
-    0xafd75f, 
-    0xafd787, 
-    0xafd7af, 
-    0xafd7d7, 
-    0xafd7ff,
-    0xafff00, 
-    0xafff5f, 
-    0xafff87, 
-    0xafffaf, 
-    0xafffd7, 
-    0xafffff,
-    0xd70000, 
-    0xd7005f, 
-    0xd70087, 
-    0xd700af, 
-    0xd700d7, 
-    0xd700ff,
-    0xd75f00, 
-    0xd75f5f, 
-    0xd75f87, 
-    0xd75faf, 
-    0xd75fd7, 
-    0xd75fff,
-    0xd78700, 
-    0xd7875f, 
-    0xd78787, 
-    0xd787af, 
-    0xd787d7, 
-    0xd787ff,
-    0xd7af00, 
-    0xd7af5f, 
-    0xd7af87, 
-    0xd7afaf, 
-    0xd7afd7, 
-    0xd7afff,
-    0xd7d700, 
-    0xd7d75f, 
-    0xd7d787, 
-    0xd7d7af, 
-    0xd7d7d7, 
-    0xd7d7ff,
-    0xd7ff00, 
-    0xd7ff5f, 
-    0xd7ff87, 
-    0xd7ffaf, 
-    0xd7ffd7, 
-    0xd7ffff,
-    0xff0000, 
-    0xff005f, 
-    0xff0087, 
-    0xff00af, 
-    0xff00d7, 
-    0xff00ff,
-    0xff5f00, 
-    0xff5f5f, 
-    0xff5f87, 
-    0xff5faf, 
-    0xff5fd7, 
-    0xff5fff,
-    0xff8700, 
-    0xff875f, 
-    0xff8787, 
-    0xff87af, 
-    0xff87d7, 
-    0xff87ff,
-    0xffaf00, 
-    0xffaf5f, 
-    0xffaf87, 
-    0xffafaf, 
-    0xffafd7, 
-    0xffafff,
-    0xffd700, 
-    0xffd75f, 
-    0xffd787, 
-    0xffd7af, 
-    0xffd7d7, 
-    0xffd7ff,
-    0xffff00, 
-    0xffff5f, 
-    0xffff87, 
-    0xffffaf, 
-    0xffffd7, 
-    0xffffff,
-    0x080808, 
-    0x121212, 
-    0x1c1c1c, 
-    0x262626, 
-    0x303030, 
-    0x3a3a3a,
-    0x444444, 
-    0x4e4e4e, 
-    0x585858, 
-    0x606060, 
-    0x666666, 
-    0x767676,
-    0x808080, 
-    0x8a8a8a, 
-    0x949494, 
-    0x9e9e9e, 
-    0xa8a8a8, 
-    0xb2b2b2,
-    0xbcbcbc, 
-    0xc6c6c6, 
-    0xd0d0d0, 
-    0xdadada, 
-    0xe4e4e4, 
-    0xeeeeee
-};
 
 static std::vector<std::string> SplitString(const std::string &str, const std::string &delimiter) {
     std::vector<std::string> result;
@@ -386,16 +106,18 @@ static std::vector<std::string> SplitString(const std::string &str, const std::s
 }
 
 // viewport width/height
-static int width = 0;
-static int height = 0;
+static int vw100 = 0;
+static int vh100 = 0;
 static GLint surface_location = -1;
 static GLint render_pass_location = -1;
 #ifdef STANDALONE
+// and this is scale = 1.0, too small on a HiDPI display
 static int font_height = 24;
 static int font_width = 12;
 static int max_font_width = 24;
 static int baseline_height = 5;
 #else
+// ohos screen is scaled but not 200% i think
 static int font_height = 48;
 static int font_width = 24;
 static int max_font_width = 48;
@@ -412,35 +134,35 @@ constexpr uint32_t TrueColorFrom(uint8_t index) {
 }
 
 void terminal_context::ResizeTo(int new_term_row, int new_term_col) {
-    int old_term_col = term_col;
-    term_row = new_term_row;
-    term_col = new_term_col;
+    int old_term_col = num_cols;
+    num_rows = new_term_row;
+    num_cols = new_term_col;
 
     // update scroll margin
     scroll_top = 0;
-    scroll_bottom = term_row - 1;
+    scroll_bottom = num_rows - 1;
 
-    terminal.resize(term_row);
-    for (int i = 0; i < term_row; i++) {
-        terminal[i].resize(term_col);
+    buffer.resize(num_rows);
+    for (int i = 0; i < num_rows; i++) {
+        buffer[i].resize(num_cols);
     }
 
-    if (row > term_row - 1) {
-        row = term_row - 1;
+    if (row > num_rows - 1) {
+        row = num_rows - 1;
     }
 
-    if (col > term_col - 1) {
-        col = term_col - 1;
+    if (col > num_cols - 1) {
+        col = num_cols - 1;
     }
 
-    tab_stops.resize(term_col);
-    for (int i = old_term_col;i < term_col;i += tab_size) {
+    tab_stops.resize(num_cols);
+    for (int i = old_term_col;i < num_cols;i += tab_size) {
         tab_stops[i] = true;
     }
 
     struct winsize ws = {};
-    ws.ws_col = term_col;
-    ws.ws_row = term_row;
+    ws.ws_col = num_cols;
+    ws.ws_row = num_rows;
     ioctl(fd, TIOCSWINSZ, &ws);
 }
 
@@ -448,44 +170,62 @@ void terminal_context::DropFirstRowIfOverflow() {
     if (row == scroll_bottom + 1) {
         // drop first row in scrolling margin
         assert(scroll_top < scroll_bottom);
-        history.push_back(terminal[scroll_top]);
-        terminal.erase(terminal.begin() + scroll_top);
-        terminal.insert(terminal.begin() + scroll_bottom, std::vector<term_char>());
-        terminal[scroll_bottom].resize(term_col);
+        history.push_back(buffer[scroll_top]);
+        buffer.erase(buffer.begin() + scroll_top);
+        buffer.insert(buffer.begin() + scroll_bottom, std::vector<term_char>());
+        buffer[scroll_bottom].resize(num_cols);
         row--;
 
         while (history.size() > MAX_HISTORY_LINES) {
             history.pop_front();
         }
-    } else if (row >= term_row) {
-        row = term_row - 1;
+    } else if (row >= num_rows) {
+        row = num_rows - 1;
     }
 }
 
-void terminal_context::InsertUtf8(uint32_t codepoint) {
-    assert(row >= 0 && row < term_row);
-    assert(col >= 0 && col <= term_col);
-    if (col == term_col) {
-        // special handling if cursor is on the right edge
-        if (autowrap) {
-            // wrap to next line
-            col = 0;
-            row++;
-            DropFirstRowIfOverflow();
+int char_width(uint32_t codepoint) {
+    return utf8proc_charwidth(codepoint);
+}
 
-            terminal[row][col].ch = codepoint;
-            terminal[row][col].style = current_style;
-            col++;
+void terminal_context::InsertUtf8(uint32_t codepoint) {
+    assert(row >= 0 && row < num_rows);
+    assert(col >= 0 && col <= num_cols);
+
+    int cw = char_width(codepoint);
+    // don't insert zero-width characters
+    if (cw <= 0) return;
+    // can fit if just equal num_cols
+    if (col + cw > num_cols) {
+        if (enable_wrap) {
+            // wrap to next line
+            row ++;
+            col = 0;
+            DropFirstRowIfOverflow();
         } else {
-            // override last column
-            terminal[row][term_col - 1].ch = codepoint;
-            terminal[row][term_col - 1].style = current_style;
+            // remove tail chars until fit
+            col = num_cols - cw;
+            // remove a broken wide char
+            while (buffer[row][col].code == term_char::WIDE_TAIL)
+                col --;
         }
-    } else {
-        terminal[row][col].ch = codepoint;
-        terminal[row][col].style = current_style;
-        col++;
     }
+    if (cw > 1) {
+        // place the wide char
+        buffer[row][col].code = codepoint;
+        buffer[row][col++].style = current_style;
+        // and cw-2 spacers
+        for (int i=1; i < cw-1 && col < num_cols; i++) {
+            buffer[row][col].code = term_char::WIDE_TAIL;
+            buffer[row][col++].style = current_style;
+        }
+        // final spacer can't be inserted
+        if (col == num_cols) return;
+        codepoint = term_char::WIDE_TAIL;
+    }
+    LOG_INFO("column: %d (%d)", col, cw);
+    buffer[row][col].code = codepoint;
+    buffer[row][col++].style = current_style;
 }
 
 // clamp cursor to valid range
@@ -493,8 +233,8 @@ void terminal_context::ClampCursor() {
     // clamp col
     if (col < 0) {
         col = 0;
-    } else if (col > term_col - 1) {
-        col = term_col - 1;
+    } else if (col > num_cols - 1) {
+        col = num_cols - 1;
     }
 
     // clamp row
@@ -509,8 +249,8 @@ void terminal_context::ClampCursor() {
         // limit cursor to terminal
         if (row < 0) {
             row = 0;
-        } else if (row > term_row - 1) {
-            row = term_row - 1;
+        } else if (row > num_rows - 1) {
+            row = num_rows - 1;
         }
     }
 }
@@ -551,7 +291,7 @@ void terminal_context::WriteFull(uint8_t *data, size_t length) {
             hex += (char)data[i];
         }
     }
-    OH_LOG_INFO(LOG_APP, "Send: %{public}s", hex.c_str());
+    LOG_INFO("Send: %s", hex.c_str());
 
     int written = 0;
     while (written < length) {
@@ -642,26 +382,26 @@ void terminal_context::HandleCSI(uint8_t current) {
             if (escape_buffer == "" || escape_buffer == "0") {
                 // CSI J, CSI 0 J
                 // erase below
-                for (int i = col; i < term_col; i++) {
-                    terminal[row][i] = term_char();
+                for (int i = col; i < num_cols; i++) {
+                    buffer[row][i] = term_char();
                 }
-                for (int i = row + 1; i < term_row; i++) {
-                    std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                for (int i = row + 1; i < num_rows; i++) {
+                    std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                 }
             } else if (escape_buffer == "1") {
                 // CSI 1 J
                 // erase above
                 for (int i = 0; i < row; i++) {
-                    std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                    std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                 }
                 for (int i = 0; i <= col; i++) {
-                    terminal[row][i] = term_char();
+                    buffer[row][i] = term_char();
                 }
             } else if (escape_buffer == "2") {
                 // CSI 2 J
                 // erase all
-                for (int i = 0; i < term_row; i++) {
-                    std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                for (int i = 0; i < num_rows; i++) {
+                    std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                 }
             } else {
                 goto unknown;
@@ -671,20 +411,20 @@ void terminal_context::HandleCSI(uint8_t current) {
             if (escape_buffer == "" || escape_buffer == "0") {
                 // CSI K, CSI 0 K
                 // erase to right
-                for (int i = col; i < term_col; i++) {
-                    terminal[row][i] = term_char();
+                for (int i = col; i < num_cols; i++) {
+                    buffer[row][i] = term_char();
                 }
             } else if (escape_buffer == "1") {
                 // CSI 1 K
                 // erase to left
-                for (int i = 0; i <= col && i < term_col; i++) {
-                    terminal[row][i] = term_char();
+                for (int i = 0; i <= col && i < num_cols; i++) {
+                    buffer[row][i] = term_char();
                 }
             } else if (escape_buffer == "2") {
                 // CSI 2 K
                 // erase whole line
-                for (int i = 0; i < term_col; i++) {
-                    terminal[row][i] = term_char();
+                for (int i = 0; i < num_cols; i++) {
+                    buffer[row][i] = term_char();
                 }
             } else {
                 goto unknown;
@@ -698,9 +438,9 @@ void terminal_context::HandleCSI(uint8_t current) {
                 // insert lines from current row, add new rows from scroll bottom
                 for (int i = scroll_bottom;i >= row;i --) {
                     if (i - line >= row) {
-                        terminal[i] = terminal[i - line];
+                        buffer[i] = buffer[i - line];
                     } else {
-                        std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                        std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                     }
                 }
                 // set to first column
@@ -715,9 +455,9 @@ void terminal_context::HandleCSI(uint8_t current) {
                 // delete lines from current row, add new rows from scroll bottom
                 for (int i = row;i <= scroll_bottom;i ++) {
                     if (i + line <= scroll_bottom) {
-                        terminal[i] = terminal[i + line];
+                        buffer[i] = buffer[i + line];
                     } else {
-                        std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                        std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                     }
                 }
                 // set to first column
@@ -726,11 +466,11 @@ void terminal_context::HandleCSI(uint8_t current) {
         } else if (current == 'P') {
             // CSI Ps P, DCH, delete # characters, move right to left
             int del = read_int_or_default(1);
-            for (int i = col; i < term_col; i++) {
-                if (i + del < term_col) {
-                    terminal[row][i] = terminal[row][i + del];
+            for (int i = col; i < num_cols; i++) {
+                if (i + del < num_cols) {
+                    buffer[row][i] = buffer[row][i + del];
                 } else {
-                    terminal[row][i] = term_char();
+                    buffer[row][i] = term_char();
                 }
             }
         } else if (current == 'S') {
@@ -738,16 +478,16 @@ void terminal_context::HandleCSI(uint8_t current) {
             int line = read_int_or_default(1);
             for (int i = scroll_top; i <= scroll_bottom; i++) {
                 if (i + line <= scroll_bottom) {
-                    terminal[i] = terminal[i + line];
+                    buffer[i] = buffer[i + line];
                 } else {
-                    std::fill(terminal[i].begin(), terminal[i].end(), term_char());
+                    std::fill(buffer[i].begin(), buffer[i].end(), term_char());
                 }
             }
         } else if (current == 'X') {
             // CSI Ps X, ECH, erase # characters, do not move others
             int del = read_int_or_default(1);
-            for (int i = col; i < col + del && i < term_col; i++) {
-                terminal[row][i] = term_char();
+            for (int i = col; i < col + del && i < num_cols; i++) {
+                buffer[row][i] = term_char();
             }
         } else if (current == 'c' && (escape_buffer == "" || escape_buffer == "0")) {
             // CSI Ps c, Send Device Attributes, Primary DA
@@ -799,7 +539,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // CSI 4 h, Insert Mode (IRM)
                     insert_mode = true;
                 } else {
-                    OH_LOG_WARN(LOG_APP, "Unknown CSI Pm h: %{public}s %{public}c",
+                    LOG_WARN("Unknown CSI Pm h: %s %c",
                                 escape_buffer.c_str(), current);
                 }
             }
@@ -812,7 +552,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // TODO
                 } else if (part == "3") {
                     // CSI ? 3 h, Enable 132 Column mode, DECCOLM
-                    ResizeTo(term_row, 132);
+                    ResizeTo(num_rows, 132);
                     ResizeWidth(132 * font_width);
                 } else if (part == "4") {
                     // CSI ? 4 h, Smooth (Slow) Scroll (DECSCLM)
@@ -825,7 +565,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     origin_mode = true;
                 } else if (part == "7") {
                     // CSI ? 7 h, Set autowrap
-                    autowrap = true;
+                    enable_wrap = true;
                 } else if (part == "12") {
                     // CSI ? 12 h, Start blinking cursor
                     // TODO
@@ -848,7 +588,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // CSI ? 2004 h, set bracketed paste mode
                     // TODO
                 } else {
-                    OH_LOG_WARN(LOG_APP, "Unknown CSI ? Pm h: %{public}s %{public}c",
+                    LOG_WARN("Unknown CSI ? Pm h: %s %c",
                                 escape_buffer.c_str(), current);
                 }
             }
@@ -860,7 +600,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // CSI 4 l, Replace Mode (IRM)
                     insert_mode = false;
                 } else {
-                    OH_LOG_WARN(LOG_APP, "Unknown CSI Pm h: %{public}s %{public}c",
+                    LOG_WARN("Unknown CSI Pm h: %s %c",
                                 escape_buffer.c_str(), current);
                 }
             }
@@ -873,7 +613,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // TODO
                 } else if (part == "3") {
                     // CSI ? 3 l, 80 Column Mode (DECCOLM)
-                    ResizeTo(term_row, 80);
+                    ResizeTo(num_rows, 80);
                     ResizeWidth(80 * font_width);
                 } else if (part == "4") {
                     // CSI ? 4 l, Jump (Fast) Scroll (DECSCLM)
@@ -886,7 +626,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     origin_mode = false;
                 } else if (part == "7") {
                     // CSI ? 7 l, Reset autowrap
-                    autowrap = false;
+                    enable_wrap = false;
                 } else if (part == "8") {
                     // CSI ? 8 l, No Auto-Repeat Keys (DECARM)
                     // TODO
@@ -903,7 +643,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     // CSI ? 2004 l, reset bracketed paste mode
                     // TODO
                 } else {
-                    OH_LOG_WARN(LOG_APP, "Unknown CSI ? Pm l: %{public}s %{public}c",
+                    LOG_WARN("Unknown CSI ? Pm l: %s %c",
                                 escape_buffer.c_str(), current);
                 }
             }
@@ -934,9 +674,7 @@ void terminal_context::HandleCSI(uint8_t current) {
                     current_style.blink = true;
                 } else if (param == 7) {
                     // inverse, flip foreground and background color, CSI 7 m
-                    std::swap(current_style.fg_red, current_style.bg_red);
-                    std::swap(current_style.fg_green, current_style.bg_green);
-                    std::swap(current_style.fg_blue, current_style.bg_blue);
+                    std::swap(current_style.fore, current_style.back);
                 } else if (param == 9) {
                     // set strikethrough, CSI 9 m
                     // TODO
@@ -957,49 +695,10 @@ void terminal_context::HandleCSI(uint8_t current) {
                     current_style.blink = false;
                 } else if (param == 27) {
                     // set positive (not inverse), CSI 27 m
-                    std::swap(current_style.fg_red, current_style.bg_red);
-                    std::swap(current_style.fg_green, current_style.bg_green);
-                    std::swap(current_style.fg_blue, current_style.bg_blue);
-                } else if (param == 30) {
-                    // black foreground
-                    current_style.fg_red = predefined_colors[black][0] / 255.0;
-                    current_style.fg_green = predefined_colors[black][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[black][2] / 255.0;
-                } else if (param == 31) {
-                    // red foreground
-                    current_style.fg_red = predefined_colors[red][0] / 255.0;
-                    current_style.fg_green = predefined_colors[red][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[red][2] / 255.0;
-                } else if (param == 32) {
-                    // green foreground
-                    current_style.fg_red = predefined_colors[green][0] / 255.0;
-                    current_style.fg_green = predefined_colors[green][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[green][2] / 255.0;
-                } else if (param == 33) {
-                    // yellow foreground
-                    current_style.fg_red = predefined_colors[yellow][0] / 255.0;
-                    current_style.fg_green = predefined_colors[yellow][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[yellow][2] / 255.0;
-                } else if (param == 34) {
-                    // blue foreground
-                    current_style.fg_red = predefined_colors[blue][0] / 255.0;
-                    current_style.fg_green = predefined_colors[blue][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[blue][2] / 255.0;
-                } else if (param == 35) {
-                    // magenta foreground
-                    current_style.fg_red = predefined_colors[magenta][0] / 255.0;
-                    current_style.fg_green = predefined_colors[magenta][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[magenta][2] / 255.0;
-                } else if (param == 36) {
-                    // cyan foreground
-                    current_style.fg_red = predefined_colors[cyan][0] / 255.0;
-                    current_style.fg_green = predefined_colors[cyan][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[cyan][2] / 255.0;
-                } else if (param == 37) {
-                    // white foreground
-                    current_style.fg_red = predefined_colors[white][0] / 255.0;
-                    current_style.fg_green = predefined_colors[white][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[white][2] / 255.0;
+                    std::swap(current_style.fore, current_style.back);
+                } else if (30 <= param && param <= 37) {
+                    // foreground ansi 0..7
+                    current_style.fore = predefined_colors[param - 30];
                 } else if (param == 38 || param == 48) {
                     // foreground color: extended color, CSI 38 : ... m
                     // background color: extended color, CSI 48 : ... m
@@ -1010,13 +709,9 @@ void terminal_context::HandleCSI(uint8_t current) {
                             int color_index = std::stoi(parts[++i]);
                             uint32_t color = TrueColorFrom(color_index);
                             if (param == 38) {
-                                current_style.fg_red = ((color >> 16) & 0xff) / 255.0;
-                                current_style.fg_green = ((color >> 8) & 0xff)  / 255.0;
-                                current_style.fg_blue = ((color >> 0) & 0xff)  / 255.0;
+                                current_style.fore = color;
                             } else {
-                                current_style.bg_red = ((color >> 16) & 0xff) / 255.0;
-                                current_style.bg_green = ((color >> 8) & 0xff) / 255.0;
-                                current_style.bg_blue = ((color >> 0) & 0xff) / 255.0;
+                                current_style.back = color;
                             }
                         } else if (color_type == 2 && i + 3 < parts.size()) { // RGB mode
                             // specified rgb
@@ -1024,148 +719,29 @@ void terminal_context::HandleCSI(uint8_t current) {
                             int g = std::stoi(parts[++i]);
                             int b = std::stoi(parts[++i]);
                             if (param == 38) {
-                                current_style.fg_red = r / 255.0;
-                                current_style.fg_green = g / 255.0;
-                                current_style.fg_blue = b / 255.0;
+                                current_style.fore.set_rgb(r,g,b);
                             } else {
-                                current_style.bg_red = r / 255.0;
-                                current_style.bg_green = g / 255.0;
-                                current_style.bg_blue = b / 255.0;
+                                current_style.back.set_rgb(r,g,b);
                             }
                         }
                     }
                 } else if (param == 39) {
                     // default foreground
-                    current_style.fg_red = predefined_colors[black][0] / 255.0;
-                    current_style.fg_green = predefined_colors[black][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[black][2] / 255.0;
-                } else if (param == 40) {
-                    // black background
-                    current_style.bg_red = predefined_colors[black][0] / 255.0;
-                    current_style.bg_green = predefined_colors[black][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[black][2] / 255.0;
-                } else if (param == 41) {
-                    // red background
-                    current_style.bg_red = predefined_colors[red][0] / 255.0;
-                    current_style.bg_green = predefined_colors[red][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[red][2] / 255.0;
-                } else if (param == 42) {
-                    // green background
-                    current_style.bg_red = predefined_colors[green][0] / 255.0;
-                    current_style.bg_green = predefined_colors[green][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[green][2] / 255.0;
-                } else if (param == 43) {
-                    // yellow background
-                    current_style.bg_red = predefined_colors[yellow][0] / 255.0;
-                    current_style.bg_green = predefined_colors[yellow][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[yellow][2] / 255.0;
-                } else if (param == 44) {
-                    // blue background
-                    current_style.bg_red = predefined_colors[blue][0] / 255.0;
-                    current_style.bg_green = predefined_colors[blue][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[blue][2] / 255.0;
-                } else if (param == 45) {
-                    // magenta background
-                    current_style.bg_red = predefined_colors[magenta][0] / 255.0;
-                    current_style.bg_green = predefined_colors[magenta][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[magenta][2] / 255.0;
-                } else if (param == 46) {
-                    // cyan background
-                    current_style.bg_red = predefined_colors[cyan][0] / 255.0;
-                    current_style.bg_green = predefined_colors[cyan][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[cyan][2] / 255.0;
-                } else if (param == 47) {
-                    // white background
-                    current_style.bg_red = predefined_colors[white][0] / 255.0;
-                    current_style.bg_green = predefined_colors[white][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[white][2] / 255.0;
+                    current_style.fore = predefined_colors[black];
+                } else if (40 <= param && param <= 47) {
+                    // background ansi 0..7
+                    current_style.back = predefined_colors[param - 40];
                 } else if (param == 49) {
                     // default background
-                    current_style.bg_red = predefined_colors[white][0] / 255.0;
-                    current_style.bg_green = predefined_colors[white][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[white][2] / 255.0;
-                } else if (param == 90) {
-                    // bright black foreground
-                    current_style.fg_red = predefined_colors[brblack][0] / 255.0;
-                    current_style.fg_green = predefined_colors[brblack][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[brblack][2] / 255.0;
-                } else if (param == 91) {
-                    // red foreground
-                    current_style.fg_red = predefined_colors[brred][0] / 255.0;
-                    current_style.fg_green = predefined_colors[brred][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[brred][2] / 255.0;
-                } else if (param == 92) {
-                    // green foreground
-                    current_style.fg_red = predefined_colors[brgreen][0] / 255.0;
-                    current_style.fg_green = predefined_colors[brgreen][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[brgreen][2] / 255.0;
-                } else if (param == 93) {
-                    // yellow foreground
-                    current_style.fg_red = predefined_colors[bryellow][0] / 255.0;
-                    current_style.fg_green = predefined_colors[bryellow][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[bryellow][2] / 255.0;
-                } else if (param == 94) {
-                    // blue foreground
-                    current_style.fg_red = predefined_colors[brblue][0] / 255.0;
-                    current_style.fg_green = predefined_colors[brblue][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[brblue][2] / 255.0;
-                } else if (param == 95) {
-                    // magenta foreground
-                    current_style.fg_red = predefined_colors[brmagenta][0] / 255.0;
-                    current_style.fg_green = predefined_colors[brmagenta][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[brmagenta][2] / 255.0;
-                } else if (param == 96) {
-                    // cyan foreground
-                    current_style.fg_red = predefined_colors[brcyan][0] / 255.0;
-                    current_style.fg_green = predefined_colors[brcyan][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[brcyan][2] / 255.0;
-                } else if (param == 97) {
-                    // white foreground
-                    current_style.fg_red = predefined_colors[brwhite][0] / 255.0;
-                    current_style.fg_green = predefined_colors[brwhite][1] / 255.0;
-                    current_style.fg_blue = predefined_colors[brwhite][2] / 255.0;
-                } else if (param == 100) {
-                    // black background
-                    current_style.bg_red = predefined_colors[brblack][0] / 255.0;
-                    current_style.bg_green = predefined_colors[brblack][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[brblack][2] / 255.0;
-                } else if (param == 101) {
-                    // red background
-                    current_style.bg_red = predefined_colors[brred][0] / 255.0;
-                    current_style.bg_green = predefined_colors[brred][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[brred][2] / 255.0;
-                } else if (param == 102) {
-                    // green background
-                    current_style.bg_red = predefined_colors[brgreen][0] / 255.0;
-                    current_style.bg_green = predefined_colors[brgreen][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[brgreen][2] / 255.0;
-                } else if (param == 103) {
-                    // yellow background
-                    current_style.bg_red = predefined_colors[bryellow][0] / 255.0;
-                    current_style.bg_green = predefined_colors[bryellow][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[bryellow][2] / 255.0;
-                } else if (param == 104) {
-                    // blue background
-                    current_style.bg_red = predefined_colors[brblue][0] / 255.0;
-                    current_style.bg_green = predefined_colors[brblue][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[brblue][2] / 255.0;
-                } else if (param == 105) {
-                    // magenta background
-                    current_style.bg_red = predefined_colors[brmagenta][0] / 255.0;
-                    current_style.bg_green = predefined_colors[brmagenta][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[brmagenta][2] / 255.0;
-                } else if (param == 106) {
-                    // cyan background
-                    current_style.bg_red = predefined_colors[brcyan][0] / 255.0;
-                    current_style.bg_green = predefined_colors[brcyan][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[brcyan][2] / 255.0;
-                } else if (param == 107) {
-                    // white background
-                    current_style.bg_red = predefined_colors[brwhite][0] / 255.0;
-                    current_style.bg_green = predefined_colors[brwhite][1] / 255.0;
-                    current_style.bg_blue = predefined_colors[brwhite][2] / 255.0;
+                    current_style.back = predefined_colors[white];
+                } else if (90 <= param && param <= 97) {
+                    // foreground ansi 8..15
+                    current_style.fore = predefined_colors[8 + param - 90];
+                } else if (100 <= param && param <= 107) {
+                    // background ansi 8..15
+                    current_style.back = predefined_colors[8 + param - 100];
                 } else {
-                    OH_LOG_WARN(LOG_APP, "Unknown CSI Pm m: %{public}s from %{public}s %{public}c",
+                    LOG_WARN("Unknown CSI Pm m: %s from %s %c",
                                 part.c_str(), escape_buffer.c_str(), current);
                 }
             }
@@ -1189,7 +765,7 @@ void terminal_context::HandleCSI(uint8_t current) {
             // CSI Ps ; Ps r, Set Scrolling Region [top;bottom]
             std::vector<std::string> parts = SplitString(escape_buffer, ";");
             int new_top = 1;
-            int new_bottom = term_row;
+            int new_bottom = num_rows;
             if (parts.size() == 2) {
                 // CSI Ps ; Ps r
                 sscanf(parts[0].c_str(), "%d", &new_top);
@@ -1201,13 +777,13 @@ void terminal_context::HandleCSI(uint8_t current) {
                 // full size of window
                 // CSI r
                 new_top = 0;
-                new_bottom = term_row - 1;
+                new_bottom = num_rows - 1;
             } else if (parts.size() == 1) {
                 // CSI Ps r
                 sscanf(parts[0].c_str(), "%d", &new_top);
                 // convert to 1-based
                 new_top --;
-                new_bottom = term_row - 1;
+                new_bottom = num_rows - 1;
             } else {
                 goto unknown;
             }
@@ -1226,17 +802,17 @@ void terminal_context::HandleCSI(uint8_t current) {
                     escape_buffer == "")) {
             // CSI Ps @, ICH, Insert Ps (Blank) Character(s)
             int count = read_int_or_default(1);
-            for (int i = term_col - 1; i >= col; i--) {
+            for (int i = num_cols - 1; i >= col; i--) {
                 if (i - col < count) {
-                    terminal[row][i].ch = ' ';
+                    buffer[row][i].code = ' ';
                 } else {
-                    terminal[row][i] = terminal[row][i - count];
+                    buffer[row][i] = buffer[row][i - count];
                 }
             }
         } else {
 unknown:
             // unknown
-            OH_LOG_WARN(LOG_APP, "Unknown escape sequence in CSI: %{public}s %{public}c",
+            LOG_WARN("Unknown escape sequence in CSI: %s %c",
                         escape_buffer.c_str(), current);
         }
         escape_state = state_idle;
@@ -1247,7 +823,7 @@ unknown:
     } else {
         // invalid byte
         // unknown
-        OH_LOG_WARN(LOG_APP, "Unknown escape sequence in CSI: %{public}s %{public}c",
+        LOG_WARN("Unknown escape sequence in CSI: %s %c",
                     escape_buffer.c_str(), current);
         escape_state = state_idle;
     }
@@ -1310,9 +886,9 @@ void terminal_context::Parse(uint8_t input) {
             if (row == scroll_top) {
                 // shift rows down
                 for (int i = scroll_bottom;i > scroll_top;i--) {
-                    terminal[i] = terminal[i-1];
+                    buffer[i] = buffer[i-1];
                 }
-                std::fill(terminal[scroll_top].begin(), terminal[scroll_top].end(), term_char());
+                std::fill(buffer[scroll_top].begin(), buffer[scroll_top].end(), term_char());
             } else {
                 row --;
                 ClampCursor();
@@ -1323,10 +899,10 @@ void terminal_context::Parse(uint8_t input) {
             escape_state = state_dcs;
         } else if (input == '8' && escape_buffer == "#") {
             // ESC # 8, DECALN fill viewport with a test pattern (E)
-            for (int i = 0;i < term_row;i++) {
-                for (int j = 0;j < term_col;j++) {
-                    terminal[i][j] = term_char();
-                    terminal[i][j].ch = 'E';
+            for (int i = 0;i < num_rows;i++) {
+                for (int j = 0;j < num_cols;j++) {
+                    buffer[i][j] = term_char();
+                    buffer[i][j].code = 'E';
                 }
             }
             escape_state = state_idle;
@@ -1348,7 +924,7 @@ void terminal_context::Parse(uint8_t input) {
             escape_buffer += input;
         } else {
             // unknown
-            OH_LOG_WARN(LOG_APP, "Unknown escape sequence after ESC: %{public}s %{public}c",
+            LOG_WARN("Unknown escape sequence after ESC: %s %c",
                         escape_buffer.c_str(), input);
             escape_state = state_idle;
         }
@@ -1362,14 +938,14 @@ void terminal_context::Parse(uint8_t input) {
                 // OSC 52 ; c ; BASE64 BEL
                 // copy to clipboard
                 std::string base64 = parts[2];
-                OH_LOG_INFO(LOG_APP, "Copy to pasteboard in native: %{public}s",
+                LOG_INFO("Copy to pasteboard in native: %s",
                             base64.c_str());
                 Copy(base64);
             } else if (parts.size() == 3 && parts[0] == "52" && parts[1] == "c" && parts[2] == "?") {
                 // OSC 52 ; c ; ? BEL
                 // paste from clipboard
                 RequestPaste();
-                OH_LOG_INFO(LOG_APP, "Request Paste from pasteboard: %{public}s", escape_buffer.c_str());
+                LOG_INFO("Request Paste from pasteboard: %s", escape_buffer.c_str());
             }
             escape_state = state_idle;
         } else if (input == '\\' && escape_buffer.size() > 0 && escape_buffer[escape_buffer.size() - 1] == '\x1b') {
@@ -1395,7 +971,7 @@ void terminal_context::Parse(uint8_t input) {
             escape_buffer += input;
         } else {
             // unknown
-            OH_LOG_WARN(LOG_APP, "Unknown escape sequence in OSC: %{public}s %{public}c",
+            LOG_WARN("Unknown escape sequence in OSC: %s %c",
                         escape_buffer.c_str(), input);
             escape_state = state_idle;
         }
@@ -1408,7 +984,7 @@ void terminal_context::Parse(uint8_t input) {
             escape_buffer += input;
         } else {
             // unknown
-            OH_LOG_WARN(LOG_APP, "Unknown escape sequence in DCS: %{public}s %{public}c",
+            LOG_WARN("Unknown escape sequence in DCS: %s %c",
                         escape_buffer.c_str(), input);
             escape_state = state_idle;
         }
@@ -1419,8 +995,8 @@ void terminal_context::Parse(uint8_t input) {
                 // printable
                 if (insert_mode) {
                     // move characters rightward
-                    for (int i = term_col - 1;i > col;i--) {
-                        terminal[row][i] = terminal[row][i - 1];
+                    for (int i = num_cols - 1;i > col;i--) {
+                        buffer[row][i] = buffer[row][i - 1];
                     }
                 }
                 InsertUtf8(input);
@@ -1462,7 +1038,7 @@ void terminal_context::Parse(uint8_t input) {
             } else if (input == '\t') {
                 // goto next tab stop
                 col ++;
-                while (col < term_col && !tab_stops[col]) {
+                while (col < num_cols && !tab_stops[col]) {
                     col ++;
                 }
                 ClampCursor();
@@ -1574,7 +1150,7 @@ void terminal_context::Worker() {
                         hex += (char)buffer[i];
                     }
                 }
-                OH_LOG_INFO(LOG_APP, "Got: %{public}s", hex.c_str());
+                LOG_INFO("Got: %s", hex.c_str());
 
                 // parse output
                 pthread_mutex_lock(&lock);
@@ -1584,7 +1160,7 @@ void terminal_context::Worker() {
                 pthread_mutex_unlock(&lock);
             } else if (r < 0 && errno == EIO) {
                 // handle child exit
-                OH_LOG_INFO(LOG_APP, "Program exited: %{public}ld %{public}d", r, errno);
+                LOG_INFO("Program exited: %ld %d", r, errno);
                 // relaunch
                 pthread_mutex_lock(&lock);
                 close(fd);
@@ -1616,7 +1192,7 @@ void terminal_context::Worker() {
         std::string paste = GetPaste();
         if (paste.size() > 0) {
             // send OSC 52 ; c ; BASE64 ST
-            OH_LOG_INFO(LOG_APP, "Paste from pasteboard: %{public}s",
+            LOG_INFO("Paste from pasteboard: %s",
                         paste.c_str());
             std::string resp = "\x1b]52;c;" + paste + "\x1b\\";
             WriteFull((uint8_t *)resp.c_str(), resp.size());
@@ -1629,8 +1205,8 @@ void terminal_context::Worker() {
 // assume lock is held
 void terminal_context::Fork() {
     struct winsize ws = {};
-    ws.ws_col = term_col;
-    ws.ws_row = term_row;
+    ws.ws_col = num_cols;
+    ws.ws_row = num_rows;
 
     int pid = forkpty(&fd, nullptr, nullptr, &ws);
     if (!pid) {
@@ -1697,15 +1273,17 @@ static std::map<std::pair<uint32_t, enum font_weight>, struct character> charact
 // code points to load from the font
 static std::set<uint32_t> codepoints_to_load;
 // do we need to reload font due to missing glyphs?
-static bool need_reload_font = false;
+static bool need_rebuild_atlas = false;
 // id of texture for glyphs
-static GLuint texture_id;
+static GLuint atlas_texture_id;
+// there is a limit on how big a texture can be
+static int atlas_width = 8192;
 
 static void ResizeTo(int new_term_row, int new_term_col, bool update_viewport = true) {
     // update viewport
     if (update_viewport) {
-        width = new_term_col * font_width;
-        height = new_term_row * font_height;
+        vw100 = new_term_col * font_width;
+        vh100 = new_term_row * font_height;
     }
 
     term.ResizeTo(new_term_row, new_term_col);
@@ -1746,84 +1324,136 @@ void SendData(uint8_t *data, size_t length) {
 // 0.5 +------+--+
 //     | 0x01    |
 // 1.0 +------+--+
-static void LoadFont() {
-    need_reload_font = false;
+static void BuildFontAtlas() {
+    need_rebuild_atlas = false;
 
     FT_Library ft;
     FT_Error err = FT_Init_FreeType(&ft);
     assert(err == 0);
 
-    std::vector<std::pair<const char *, font_weight>> fonts = {
+    decltype(characters) newChars;
+    
+    std::vector<struct font_spec> fonts = {
 #ifdef STANDALONE
-        {"../../../../../fonts/ttf/Inconsolata-Regular.ttf", font_weight::regular},
-        {"../../../../../fonts/ttf/Inconsolata-Bold.ttf", font_weight::bold},
+        {"/usr/share/fonts/noto/NotoSansMono-Regular.ttf", {font_weight::regular}},
+        {"/usr/share/fonts/noto/NotoSansMono-Bold.ttf", {font_weight::bold}},
+        {"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", {.weight=font_weight::regular, .ttc_index=0}}
 #else
-        {"/data/storage/el2/base/haps/entry/files/Inconsolata-Regular.ttf", font_weight::regular},
-        {"/data/storage/el2/base/haps/entry/files/Inconsolata-Bold.ttf", font_weight::bold},
+        {
+            "/system/fonts/NotoSansMono[wdth,wght].ttf",
+            {.variable_width = 88 << 16, .variable_weight = 400 << 16}
+        },
+        {
+            "/system/fonts/NotoSansMono[wdth,wght].ttf",
+            {.weight = font_weight::bold, .variable_width = 88 << 16, .variable_weight = 700 << 16}
+        },
+        {"/system/fonts/NotoSansCJK-Regular.ttc", {.ttc_index=2}} // 0=JP, 1=KR
 #endif
     };
 
     // save glyph for all characters of all weights
     // only one channel
-    std::vector<uint8_t> bitmap;
-    int row_stride = max_font_width;
-    int bitmap_height = 0;
+    int bound = font_height, num_rows = 1, row_pointer = 0;
+    std::vector<uint8_t> bitmap(bound * atlas_width, 0);
 
-    for (auto pair : fonts) {
-        const char *font = pair.first;
-        font_weight weight = pair.second;
-
+    for (const auto & fnt : fonts) {
+        const char *font = fnt.path;
         FT_Face face;
-        err = FT_New_Face(ft, font, 0, &face);
+        err = FT_New_Face(ft, font, fnt.opts.ttc_index, &face);
         assert(err == 0);
+    
+        if (fnt.opts.variable_width.has_value() || fnt.opts.variable_weight.has_value()) {
+            FT_MM_Var * vars;
+            std::vector<FT_Fixed> coords;
+            if (FT_Get_MM_Var(face, &vars) == 0) {
+                for (int ia = 0; ia < vars->num_axis; ia++) {
+                    if (strcmp("wdth", vars->axis[ia].name) == 0)
+                        coords.push_back(fnt.opts.variable_width.value_or(vars->axis[ia].def));
+                    else if (strcmp("wght", vars->axis[ia].name) == 0)
+                        coords.push_back(fnt.opts.variable_weight.value_or(vars->axis[ia].def));
+                    else
+                        coords.push_back(vars->axis[ia].def);
+                }
+                FT_Set_Var_Design_Coordinates(face, coords.size(), coords.data());
+                FT_Done_MM_Var(ft, vars);
+            }
+        }
+        
         FT_Set_Pixel_Sizes(face, 0, font_height);
         // Note: in 26.6 fractional pixel format
-        OH_LOG_INFO(LOG_APP,
-                    "Ascender: %{public}d Descender: %{public}d Height: %{public}d XMin: %{public}ld XMax: %{public}ld "
-                    "YMin: %{public}ld YMax: %{public}ld XScale: %{public}ld YScale: %{public}ld",
+        LOG_INFO(
+                    "Ascender: %d Descender: %d Height: %d XMin: %ld XMax: %ld "
+                    "YMin: %ld YMax: %ld XScale: %ld YScale: %ld",
                     face->ascender, face->descender, face->height, face->bbox.xMin, face->bbox.xMax, face->bbox.yMin,
                     face->bbox.yMax, face->size->metrics.x_scale, face->size->metrics.y_scale);
+        
+        for (auto charCode : codepoints_to_load) {
+            // already loaded
+            if (newChars.count({charCode, fnt.opts.weight}))
+                continue;
+            FT_ULong glyphIndex = FT_Get_Char_Index(face, charCode);
+            // allow NUL to be loaded
+            if (!charCode || glyphIndex) {
+                FT_Load_Glyph(face, glyphIndex, FT_LOAD_RENDER);
+            }
+            else {
+                if (&fnt == &fonts.back()) {
+                    newChars[{charCode, font_weight::regular}] = newChars[{0, font_weight::regular}];
+                }
+                continue;
+            }
 
-        for (uint32_t c : codepoints_to_load) {
-            // load character glyph
-            assert(FT_Load_Char(face, c, FT_LOAD_RENDER) == 0);
-
-            OH_LOG_INFO(LOG_APP,
-                        "Weight: %{public}d Char: %{public}d(0x%{public}x) Glyph: %{public}d %{public}d Left: "
-                        "%{public}d "
-                        "Top: %{public}d "
-                        "Advance: %{public}ld",
-                        weight, c, c, face->glyph->bitmap.width, face->glyph->bitmap.rows, face->glyph->bitmap_left,
+            LOG_INFO(
+                        "Weight: %d Char: %d(0x%x) Glyph: %d %d Left: "
+                        "%d "
+                        "Top: %d "
+                        "Advance: %ld",
+                        fnt.weight, charCode, charCode, face->glyph->bitmap.width, face->glyph->bitmap.rows, face->glyph->bitmap_left,
                         face->glyph->bitmap_top, face->glyph->advance.x);
 
-            // copy to bitmap
-            int old_bitmap_height = bitmap_height;
-            int new_bitmap_height = bitmap_height + face->glyph->bitmap.rows;
-            bitmap.resize(row_stride * new_bitmap_height);
-            bitmap_height = new_bitmap_height;
+            auto glyph = face->glyph;
+            auto bits = face->glyph->bitmap;
 
-            assert(face->glyph->bitmap.width <= row_stride);
-            for (int i = 0; i < face->glyph->bitmap.rows; i++) {
-                for (int j = 0; j < face->glyph->bitmap.width; j++) {
-                    // compute offset in the large texture
-                    int off = old_bitmap_height * row_stride;
-                    bitmap[i * row_stride + j + off] = face->glyph->bitmap.buffer[i * face->glyph->bitmap.width + j];
+            int row_start;
+            // if current row can't fit new char, extend a row
+            if (row_pointer + bits.width < atlas_width) {
+                row_start = row_pointer;
+                row_pointer += bits.width;
+            } else {
+                row_start = 0;
+                row_pointer = bits.width;
+                // a new row cannot be added
+                if (bound * (num_rows + 1) > atlas_width)
+                    break;
+                num_rows += 1;
+                bitmap.resize(bound * atlas_width * num_rows);
+            }
+            int col_start = bound * (num_rows - 1);
+
+            // it is possible that rows >= font_height
+            for (int i = 0; i < bits.rows && i < bound; i++) {
+                for (int j = 0; j < bits.width; j++) {
+                    bitmap[
+                        atlas_width * (col_start + i)
+                        + row_start + j
+                    ] =
+                    bits.buffer[bits.width * i + j];
                 }
             }
 
             // compute location within the texture
             // first pass: store pixels
             character character = {
-                .left = 0,
-                .right = (float)face->glyph->bitmap.width - 1,
-                .top = (float)old_bitmap_height,
-                .bottom = (float)new_bitmap_height - 1,
-                .xoff = face->glyph->bitmap_left,
-                .yoff = (int)(baseline_height + face->glyph->bitmap_top - face->glyph->bitmap.rows),
-                .width = (int)face->glyph->bitmap.width,
-                .height = (int)face->glyph->bitmap.rows,
+                .left = float(row_start),
+                .right = float(row_start + bits.width - 1),
+                .top = float(col_start),
+                .bottom = float(col_start + bits.rows - 1),
+                .xoff = glyph->bitmap_left,
+                .yoff = int(baseline_height + glyph->bitmap_top - bits.rows),
+                .width = int(bits.width),
+                .height = int(bits.rows),
             };
-            characters[{c, weight}] = character;
+            newChars.insert(std::make_pair(std::make_pair(charCode, fnt.weight), character));
         }
 
 
@@ -1832,28 +1462,37 @@ static void LoadFont() {
 
     FT_Done_FreeType(ft);
 
+    int atlas_height = bound * num_rows;
     // now bitmap contains all glyphs
     // second pass: convert pixels to uv coordinates
-    for (auto &pair : characters) {
+    for (auto &pair : newChars) {
+        auto& g = pair.second;
         // https://stackoverflow.com/questions/35454432/finding-image-pixel-coordinates-integers-from-uv-values-floats-of-obj-file
-        pair.second.left /= row_stride - 1;
-        pair.second.right /= row_stride - 1;
-        pair.second.top = (pair.second.top + 0.5) / bitmap_height;
-        pair.second.bottom = (pair.second.bottom + 0.5) / bitmap_height;
+        g.left /= atlas_width;
+        g.right /= atlas_width;
+        g.top = (g.top + 0.5) / atlas_height;
+        g.bottom = (g.bottom + 0.5) / atlas_height;
     }
 
     // disable byte-alignment restriction
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
+    
     // generate texture
-    glBindTexture(GL_TEXTURE_2D, texture_id);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, row_stride, bitmap_height, 0, GL_RED, GL_UNSIGNED_BYTE, bitmap.data());
+    glBindTexture(GL_TEXTURE_2D, atlas_texture_id);
+    {
+    GLenum err = glGetError();
+    assert(err == GL_NO_ERROR);
+    }
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, atlas_width, atlas_height, 0, GL_RED, GL_UNSIGNED_BYTE, bitmap.data());
 
     // set texture options
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    
+    characters = newChars;
 }
 
 static GLuint program_id;
@@ -1872,24 +1511,27 @@ static void Draw() {
     uint64_t current_msec = tv.tv_sec * 1000 + tv.tv_usec / 1000;
 
     // clear buffer with background color
-    glClearColor(predefined_colors[white][0] / 255.0, predefined_colors[white][1] / 255.0, predefined_colors[white][2] / 255.0, 1.0f);
+    {
+        term_style::color back(predefined_colors[white]);
+        glClearColor(back.u.red / 255.0, back.u.green / 255.0, back.u.blue / 255.0, 1.0);
+    }
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // update surface size
     pthread_mutex_lock(&term.lock);
-    int aligned_width = width / font_width * font_width;
-    int aligned_height = height / font_height * font_height;
+    int aligned_width = vw100 / font_width * font_width;
+    int aligned_height = vh100 / font_height * font_height;
     glUniform2f(surface_location, aligned_width, aligned_height);
-    glViewport(0, height - aligned_height, aligned_width, aligned_height);
+    glViewport(0, vh100 - aligned_height, aligned_width, aligned_height);
 
     // set texture
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texture_id);
+    glBindTexture(GL_TEXTURE_2D, atlas_texture_id);
 
     // bind our vertex array
     glBindVertexArray(vertex_array);
 
-    int max_lines = height / font_height;
+    int max_lines = vh100 / font_height;
     // vec4 vertex
     static std::vector<GLfloat> vertex_pass0_data;
     static std::vector<GLfloat> vertex_pass1_data;
@@ -1899,13 +1541,13 @@ static void Draw() {
     static std::vector<GLfloat> background_color_data;
 
     vertex_pass0_data.clear();
-    vertex_pass0_data.reserve(term.term_row * term.term_col * 24);
+    vertex_pass0_data.reserve(term.num_rows * term.num_cols * 24);
     vertex_pass1_data.clear();
-    vertex_pass1_data.reserve(term.term_row * term.term_col * 24);
+    vertex_pass1_data.reserve(term.num_rows * term.num_cols * 24);
     text_color_data.clear();
-    text_color_data.reserve(term.term_row * term.term_col * 18);
+    text_color_data.reserve(term.num_rows * term.num_cols * 18);
     background_color_data.clear();
-    background_color_data.reserve(term.term_row * term.term_col * 18);
+    background_color_data.reserve(term.num_rows * term.num_cols * 18);
 
     // ensure at least one line shown, for very large scroll_offset
     int scroll_rows = scroll_offset / font_height;
@@ -1919,28 +1561,30 @@ static void Draw() {
         float x = 0.0;
         float y = aligned_height - (i + 1) * font_height;
         int i_row = i - scroll_rows;
-        std::vector<term_char> ch;
-        if (i_row >= 0 && i_row < term.term_row) {
-            ch = term.terminal[i_row];
+        std::vector<term_char> row;
+        if (i_row >= 0 && i_row < term.num_rows) {
+            row = term.buffer[i_row];
         } else if (i_row < 0 && (int)term.history.size() + i_row >= 0) {
-            ch = term.history[term.history.size() + i_row];
+            row = term.history[term.history.size() + i_row];
         } else {
             continue;
         }
 
         int cur_col = 0;
-        for (auto c : ch) {
-            uint32_t codepoint = c.ch;
-            auto key = std::pair<uint32_t, enum font_weight>(c.ch, c.style.weight);
+        for (auto c : row) {
+            uint32_t codepoint = c.code;
+            auto key = std::pair<uint32_t, enum font_weight>(c.code, c.style.weight);
             auto it = characters.find(key);
+            if (it == characters.end())
+                it = characters.find(std::make_pair(c.code, font_weight::regular));
             if (it == characters.end()) {
                 // reload font to locate it
-                OH_LOG_WARN(LOG_APP, "Missing character: %{public}d of weight %{public}d", c.ch, c.style.weight);
-                need_reload_font = true;
-                codepoints_to_load.insert(c.ch);
+                LOG_WARN("Missing character: %d of weight %d", c.code, c.style.weight);
+                need_rebuild_atlas = true;
+                codepoints_to_load.insert(c.code);
 
-                // we don't have the character, fallback to space
-                it = characters.find(std::pair<uint32_t, enum font_weight>(' ', c.style.weight));
+                // we don't have the character, fallback to .notdef
+                it = characters.find(std::pair<uint32_t, enum font_weight>(0, c.style.weight));
                 assert(it != characters.end());
             }
 
@@ -1982,28 +1626,12 @@ static void Draw() {
             GLfloat g_text_color_buffer_data[18];
             GLfloat g_background_color_buffer_data[18];
 
-            if (i_row == term.row && cur_col == term.col && term.show_cursor) {
-                // cursor
-                for (int i = 0; i < 6; i++) {
-                    g_text_color_buffer_data[i * 3 + 0] = 1.0 - c.style.fg_red;
-                    g_text_color_buffer_data[i * 3 + 1] = 1.0 - c.style.fg_green;
-                    g_text_color_buffer_data[i * 3 + 2] = 1.0 - c.style.fg_blue;
-                    g_background_color_buffer_data[i * 3 + 0] = 1.0 - c.style.bg_red;
-                    g_background_color_buffer_data[i * 3 + 1] = 1.0 - c.style.bg_green;
-                    g_background_color_buffer_data[i * 3 + 2] = 1.0 - c.style.bg_blue;
-                }
-            } else {
-                for (int i = 0; i < 6; i++) {
-                    g_text_color_buffer_data[i * 3 + 0] = c.style.fg_red;
-                    g_text_color_buffer_data[i * 3 + 1] = c.style.fg_green;
-                    g_text_color_buffer_data[i * 3 + 2] = c.style.fg_blue;
-                    g_background_color_buffer_data[i * 3 + 0] = c.style.bg_red;
-                    g_background_color_buffer_data[i * 3 + 1] = c.style.bg_green;
-                    g_background_color_buffer_data[i * 3 + 2] = c.style.bg_blue;
-                }
+            for (int i = 0; i < 6; i++) {
+                c.style.fore.put_f3(&g_text_color_buffer_data[i*3]);
+                c.style.back.put_f3(&g_background_color_buffer_data[i*3]);
             }
 
-            if (term.reverse_video) {
+            if ((term.show_cursor && i_row == term.row && cur_col == term.col) ^ term.reverse_video) {
                 // invert all colors
                 for (int i = 0; i < 18; i++) {
                     g_text_color_buffer_data[i] = 1.0 - g_text_color_buffer_data[i];
@@ -2011,8 +1639,8 @@ static void Draw() {
                 }
             }
 
+            // blink: for every 1s, in 0.5s, text color equals to back ground color
             if (c.style.blink && current_msec % 1000 > 500) {
-                // for every 1s, in 0.5s, text color equals to back ground color
                 for (int i = 0; i < 18; i++) {
                     g_text_color_buffer_data[i] = g_background_color_buffer_data[i];
                 }
@@ -2088,7 +1716,7 @@ static void *RenderWorker(void *) {
     if (info_log_length > 0) {
         std::vector<char> vertex_shader_error_message(info_log_length + 1);
         glGetShaderInfoLog(vertex_shader_id, info_log_length, NULL, &vertex_shader_error_message[0]);
-        OH_LOG_ERROR(LOG_APP, "Failed to build vertex shader: %{public}s", &vertex_shader_error_message[0]);
+        LOG_ERROR("Failed to build vertex shader: %s", &vertex_shader_error_message[0]);
     }
 
     GLuint fragment_shader_id = glCreateShader(GL_FRAGMENT_SHADER);
@@ -2121,7 +1749,7 @@ static void *RenderWorker(void *) {
     if (info_log_length > 0) {
         std::vector<char> fragment_shader_error_message(info_log_length + 1);
         glGetShaderInfoLog(fragment_shader_id, info_log_length, NULL, &fragment_shader_error_message[0]);
-        OH_LOG_ERROR(LOG_APP, "Failed to build fragment shader: %{public}s", &fragment_shader_error_message[0]);
+        LOG_ERROR("Failed to build fragment shader: %s", &fragment_shader_error_message[0]);
     }
 
     GLuint program_id = glCreateProgram();
@@ -2133,7 +1761,7 @@ static void *RenderWorker(void *) {
     if (info_log_length > 0) {
         std::vector<char> link_program_error_message(info_log_length + 1);
         glGetProgramInfoLog(program_id, info_log_length, NULL, &link_program_error_message[0]);
-        OH_LOG_ERROR(LOG_APP, "Failed to link program: %{public}s", &link_program_error_message[0]);
+        LOG_ERROR("Failed to link program: %s", &link_program_error_message[0]);
     }
 
     surface_location = glGetUniformLocation(program_id, "surface");
@@ -2147,12 +1775,14 @@ static void *RenderWorker(void *) {
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
     // load font from ttf for the initial characters
-    glGenTextures(1, &texture_id);
+    glGenTextures(1, &atlas_texture_id);
     // load common characters initially
-    for (uint32_t i = 0; i < 128; i++) {
+    codepoints_to_load.insert(0);
+    for (uint32_t i = 32; i < 128; i++) {
         codepoints_to_load.insert(i);
     }
-    LoadFont();
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &atlas_width);
+    BuildFontAtlas();
 
     // create buffers for drawing
     glGenVertexArrays(1, &vertex_array);
@@ -2240,13 +1870,13 @@ static void *RenderWorker(void *) {
             for (auto t : time) {
                 sum += t;
             }
-            OH_LOG_INFO(LOG_APP, "FPS: %{public}d, %{public}ld ms per draw", fps, sum / fps);
+            //LOG_INFO("FPS: %d, %ld ms per draw", fps, sum / fps);
             fps = 0;
             time.clear();
         }
 
-        if (need_reload_font) {
-            LoadFont();
+        if (need_rebuild_atlas) {
+            BuildFontAtlas();
         }
     }
 }
@@ -2255,10 +1885,10 @@ static void *RenderWorker(void *) {
 // on resize
 void Resize(int new_width, int new_height) {
     pthread_mutex_lock(&term.lock);
-    width = new_width;
-    height = new_height;
+    vw100 = new_width;
+    vh100 = new_height;
 
-    ResizeTo(height / font_height, width / font_width, false);
+    ResizeTo(vh100 / font_height, vw100 / font_width, false);
     pthread_mutex_unlock(&term.lock);
 }
 
