@@ -22,7 +22,7 @@ Bundled packages:
 | coremark | curl | elf-loader | expat | fastfetch |
 | fish | gcc | gdb | gettext | git |
 | glib | gmp | hdc | htop | kbd |
-|lib{archive|event|ffi|idn2|unistring|
+|lib{archive|event|ffi|idn2|unistring}|
 | lz4 | make | mpc | mpfr | ncnn |
 |ncurses|openssh|openssl|pcre2|proot|
 |python|qemu|qemu-vroot|readline|sl|
