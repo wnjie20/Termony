@@ -3,9 +3,10 @@
 
 #include "terminal.h"
 #include "freetype/ftmm.h"
-#include "utf8proc-2.10.0/utf8proc.h"
+#include "utf8proc/utf8proc.h"
 #include <GLES3/gl32.h>
 #include <algorithm>
+#include <cassert>
 #include <cstdarg>
 #include <cstdint>
 #include <deque>
@@ -13,7 +14,6 @@
 #include <set>
 #include <string>
 #include <vector>
-#include <assert.h>
 #include <fcntl.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -45,6 +45,8 @@ void hiprintf(int level, const char * fmt, ...) {
     }
     va_end(args);
 }
+// supress logs
+//#define hiprintf(...)
 #define LOG_DEBUG(...) hiprintf(3, __VA_ARGS__)
 #define LOG_INFO(...) hiprintf(4, __VA_ARGS__)
 #define LOG_WARN(...) hiprintf(5, __VA_ARGS__)
@@ -1213,6 +1215,9 @@ void terminal_context::Fork() {
 #else
         // override HOME to /storage/Users/currentUser since it is writable
         const char *home = "/storage/Users/currentUser";
+        setenv("PATH",
+            "/data/app/bin:/data/service/hnp/bin:/bin:"
+            "/usr/local/bin:/usr/bin:/system/bin:/vendor/bin", 1);
         setenv("HOME", home, 1);
         setenv("PWD", home, 1);
         // set LD_LIRBARY_PATH for shared libraries
@@ -1425,7 +1430,8 @@ static void BuildFontAtlas() {
             }
             int col_start = bound * (num_rows - 1);
 
-            for (int i = 0; i < bits.rows; i++) {
+            // it is possible that rows >= font_height
+            for (int i = 0; i < bits.rows && i < bound; i++) {
                 for (int j = 0; j < bits.width; j++) {
                     bitmap[
                         atlas_width * (col_start + i)
@@ -1555,17 +1561,17 @@ static void Draw() {
         float x = 0.0;
         float y = aligned_height - (i + 1) * font_height;
         int i_row = i - scroll_rows;
-        std::vector<term_char> ch;
+        std::vector<term_char> row;
         if (i_row >= 0 && i_row < term.num_rows) {
-            ch = term.buffer[i_row];
+            row = term.buffer[i_row];
         } else if (i_row < 0 && (int)term.history.size() + i_row >= 0) {
-            ch = term.history[term.history.size() + i_row];
+            row = term.history[term.history.size() + i_row];
         } else {
             continue;
         }
 
         int cur_col = 0;
-        for (auto c : ch) {
+        for (auto c : row) {
             uint32_t codepoint = c.code;
             auto key = std::pair<uint32_t, enum font_weight>(c.code, c.style.weight);
             auto it = characters.find(key);
@@ -1864,7 +1870,7 @@ static void *RenderWorker(void *) {
             for (auto t : time) {
                 sum += t;
             }
-            LOG_INFO("FPS: %d, %ld ms per draw", fps, sum / fps);
+            //LOG_INFO("FPS: %d, %ld ms per draw", fps, sum / fps);
             fps = 0;
             time.clear();
         }
