@@ -102,7 +102,7 @@ tar xvf ubuntu-base-24.04.3-base-arm64.tar.gz -C /data/storage/el2/base/files/ub
 - append `APT::Sandbox::User "root";` to `/etc/apt/apt.conf.d/01-vendor-ubuntu` file in ubuntu root filesyste
 ```shell
 cd /data/storage/el2/base/files/ubuntu_rootfs
-echo 'APT::Sandbox::User "root";' > etc/apt/apt.conf.d/01-vendor-ubuntu
+echo 'APT::Sandbox::User "root";' >> etc/apt/apt.conf.d/01-vendor-ubuntu
 ```
 - Run `qemu-vroot-aarch64` to run bash shell in root-filesystem
 ```shell
