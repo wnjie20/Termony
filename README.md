@@ -1,7 +1,6 @@
 # Termony
 
-> Language Selection: [English](./README.md) [中文](./README_CN.md) <br /><br />
-> Repository Selection: [GitHub](https://github.com/jiegec/Termony) [Gitee](https://gitee.com/jiegec/Termony)
+[GitHub](https://github.com/jiegec/Termony) [Gitee](https://gitee.com/jiegec/Termony) - [中文](README_CN.md)
 
 Termux for HarmonyOS Computer. Working in Progress.
 
