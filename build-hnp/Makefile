@@ -96,6 +96,7 @@ PKGS=gettext \
 	readline \
 	htop \
 	vkpeak \
+	kbd \
 	libevent \
 	tmux \
 	fish \
@@ -108,6 +109,7 @@ PKGS=gettext \
 	git \
 	aria2 \
 	xz \
+	gdb \
 	python \
 	libusb \
 	hdc \
