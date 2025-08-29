@@ -21,8 +21,28 @@ export OHOS_SDK_HOME=$TOOL_HOME/sdk/default/openharmony
 export PATH=$TOOL_HOME/bin:$PATH
 export PATH=$TOOL_HOME/tool/node/bin:$PATH
 # for x86_64, set OHOS_ARCH and OHOS_ABI to x86_64
-export OHOS_ARCH=aarch64
-export OHOS_ABI=arm64-v8a
+echo "Please input your choice:"
+echo "1) x86_64"
+echo "2) arm64"
+read -p "input option(1/2): " choice
+
+case $choice in
+    1)
+        export OHOS_ARCH=x86_64
+        export OHOS_ABI=x86_64
+        echo "set to x86_64"
+        ;;
+    2)
+        export OHOS_ARCH=aarch64
+        export OHOS_ABI=arm64-v8a
+        echo "set to arm64"
+        ;;
+    *)
+        echo "Invalid option, defaulting to arm64"
+        export OHOS_ARCH=aarch64
+        export OHOS_ABI=arm64-v8a
+        ;;
+esac
 
 prepare_arkuix() {
 	wget https://repo.huaweicloud.com/arkui-crossplatform/sdk/${ARKUIX_VERSION}/linux/arkui-x-linux-x64-${ARKUIX_VERSION}-Release.zip -c -O ${PROJ_BASE_HOME}/arkuix-sdk.zip
