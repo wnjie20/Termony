@@ -20,7 +20,7 @@ export DEVECO_SDK_HOME=$TOOL_HOME/sdk
 export OHOS_SDK_HOME=$TOOL_HOME/sdk/default/openharmony
 export PATH=$TOOL_HOME/bin:$PATH
 export PATH=$TOOL_HOME/tool/node/bin:$PATH
-# for x86_64, set OHOS_ARCH and OHOS_ABI to x86_64
+# set OHOS_ARCH and OHOS_ABI to x86_64 or defaulting to arm64
 echo "Please input your choice:"
 echo "1) x86_64"
 echo "2) arm64"
